@@ -8,6 +8,11 @@ import fs from 'fs';
 import path from 'path';
 import helmet from 'helmet';
 import xss from 'xss';
+import dotenv from 'dotenv';
+
+// Load environment variables based on NODE_ENV
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
+dotenv.config({ path: envFile });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -17,12 +22,12 @@ const httpServer = createServer(app);
 
 // Configure security headers with proper CSP
 const isProd = process.env.NODE_ENV === 'production';
-const KOYEB_URL = 'slight-deni-dinno-f262dfa8.koyeb.app';
-const FULL_KOYEB_URL = `https://${KOYEB_URL}`;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? [FULL_KOYEB_URL] 
+  ? [KOYEB_URL ? `https://${KOYEB_URL}` : FRONTEND_URL]
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
 app.use(helmet({

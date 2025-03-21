@@ -23,7 +23,11 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Set NODE_ENV
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PORT=8000 \
+    HOST=0.0.0.0 \
+    WS_PING_INTERVAL=30000 \
+    WS_PING_TIMEOUT=5000
 
 # Install production dependencies only
 COPY package*.json ./
@@ -31,6 +35,7 @@ RUN npm install --only=production
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
+COPY .env.production ./.env
 
 # Add non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
@@ -40,7 +45,7 @@ RUN addgroup -g 1001 -S nodejs && \
 USER nodejs
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8000
 
 # Start the application
 CMD ["npm", "start"] 

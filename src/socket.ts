@@ -1,5 +1,5 @@
 import { Server } from 'socket.io';
-import { Server as HTTPServer } from 'http';
+import type { Server as HTTPServer } from 'http';
 import { encodeBase64, decodeBase64 } from 'tweetnacl-util';
 
 interface User {
@@ -9,14 +9,22 @@ interface User {
 }
 
 export const initializeSocket = (httpServer: HTTPServer) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const KOYEB_URL = process.env.KOYEB_URL;
+  
+  const allowedOrigins = isProd
+    ? [KOYEB_URL ? `https://${KOYEB_URL}` : FRONTEND_URL]
+    : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.NODE_ENV === 'production'
-        ? 'your-production-domain.com'
-        : ['http://localhost:5173', 'http://127.0.0.1:5173'], // Vite's default ports
+      origin: allowedOrigins,
       methods: ['GET', 'POST'],
       credentials: true
-    }
+    },
+    pingInterval: parseInt(process.env.WS_PING_INTERVAL || '30000', 10),
+    pingTimeout: parseInt(process.env.WS_PING_TIMEOUT || '5000', 10)
   });
 
   const users = new Map<string, User>();
