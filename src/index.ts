@@ -53,12 +53,20 @@ app.use(helmet({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static files from public directory
+app.use(express.static(join(__dirname, '../public')));
+
 // Apply CORS configuration
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST'],
   credentials: true
 }));
+
+// Status endpoint
+app.get('/status', (_req, res) => {
+  res.sendFile(join(__dirname, '../public/status.html'));
+});
 
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
@@ -80,9 +88,17 @@ const sanitizeInput = (input: string): string => {
   return xss(input.trim());
 };
 
-// Socket.IO event handlers
+// Connection logging
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log(`[${new Date().toISOString()}] Client connected: ${socket.id}`);
+  
+  socket.on('disconnect', (reason) => {
+    console.log(`[${new Date().toISOString()}] Client disconnected: ${socket.id}, Reason: ${reason}`);
+  });
+
+  socket.on('error', (error) => {
+    console.error(`[${new Date().toISOString()}] Socket error for ${socket.id}:`, error);
+  });
 
   socket.on('register', ({ username, color }) => {
     // Validate username
@@ -281,6 +297,10 @@ if (process.env.NODE_ENV === 'production') {
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
-httpServer.listen(PORT, () => {
-  console.log(`Server running on http://${HOST}:${PORT}`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[${new Date().toISOString()}] Server started`);
+  console.log(`[${new Date().toISOString()}] Server running on http://${HOST}:${PORT}`);
+  console.log(`[${new Date().toISOString()}] Status page available at http://${HOST}:${PORT}/status`);
+  console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
+  console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
 });

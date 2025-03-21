@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Status</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .status-container {
+            text-align: center;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .status {
+            font-size: 1.5rem;
+            margin: 1rem 0;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+        }
+        .live {
+            color: #2ecc71;
+            background: #eafaf1;
+        }
+        .connected {
+            color: #3498db;
+            background: #ebf5fb;
+        }
+    </style>
+</head>
+<body>
+    <div class="status-container">
+        <h1>Server Status</h1>
+        <div id="statusText" class="status live">Server is Live</div>
+    </div>
+
+    <script>
+        const socket = io();
+        const statusText = document.getElementById('statusText');
+
+        socket.on('connect', () => {
+            statusText.textContent = 'Connected to Frontend';
+            statusText.classList.remove('live');
+            statusText.classList.add('connected');
+        });
+
+        socket.on('disconnect', () => {
+            statusText.textContent = 'Server is Live';
+            statusText.classList.remove('connected');
+            statusText.classList.add('live');
+        });
+    </script>
+    <script src="/socket.io/socket.io.js"></script>
+</body>
+</html> 
