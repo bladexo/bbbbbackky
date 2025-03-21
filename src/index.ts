@@ -27,7 +27,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? [KOYEB_URL ? `https://${KOYEB_URL}` : FRONTEND_URL]
+  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
 app.use(helmet({
@@ -99,7 +99,8 @@ const io = new Server(httpServer, {
   },
   connectionStateRecovery: {
     maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
-  }
+  },
+  transports: ['websocket', 'polling'] // Enable both WebSocket and polling
 });
 
 // Simple user tracking
