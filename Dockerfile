@@ -10,7 +10,7 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy source code
+# Copy source code and public directory
 COPY . .
 
 # Build the application
@@ -33,8 +33,9 @@ ENV NODE_ENV=production \
 COPY package*.json ./
 RUN npm install --only=production
 
-# Copy built files from builder stage
+# Copy built files and public directory from builder stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/public ./public
 COPY .env.production ./.env
 
 # Add non-root user for security

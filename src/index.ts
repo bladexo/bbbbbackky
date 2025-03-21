@@ -56,17 +56,39 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files from public directory
 app.use(express.static(join(__dirname, '../public')));
 
+// Root endpoint redirects to status page
+app.get('/', (_req, res) => {
+  res.redirect('/status');
+});
+
+// Status endpoint
+app.get('/status', (_req, res) => {
+  const statusPath = join(__dirname, '../public/status.html');
+  console.log(`[${new Date().toISOString()}] Serving status page from: ${statusPath}`);
+  
+  if (fs.existsSync(statusPath)) {
+    res.sendFile(statusPath);
+  } else {
+    console.error(`[${new Date().toISOString()}] Status page not found at: ${statusPath}`);
+    res.status(404).send('Status page not found. Please check server configuration.');
+  }
+});
+
+// Health check endpoint
+app.get('/health', (_req, res) => {
+  res.json({ 
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV
+  });
+});
+
 // Apply CORS configuration
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST'],
   credentials: true
 }));
-
-// Status endpoint
-app.get('/status', (_req, res) => {
-  res.sendFile(join(__dirname, '../public/status.html'));
-});
 
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
