@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Status Panel</title>
+    <style>
+        :root {
+            --neon-green: #39ff14;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background-color: #000;
+            color: var(--neon-green);
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .login-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 80vh;
+        }
+
+        .login-panel {
+            background-color: rgba(0, 17, 0, 0.9);
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .status-panel {
+            background-color: rgba(0, 17, 0, 0.9);
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .status-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(57, 255, 20, 0.2);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--neon-green);
+            animation: pulse 2s infinite;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .status-item {
+            background-color: rgba(0, 17, 0, 0.5);
+            border: 1px solid rgba(57, 255, 20, 0.2);
+            border-radius: 4px;
+            padding: 15px;
+        }
+
+        .status-label {
+            font-size: 0.8em;
+            color: rgba(57, 255, 20, 0.7);
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            font-size: 1.2em;
+        }
+
+        .message-panel {
+            background-color: rgba(0, 17, 0, 0.9);
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .message-input {
+            width: 100%;
+            background-color: rgba(0, 17, 0, 0.5);
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            border-radius: 4px;
+            padding: 10px;
+            color: var(--neon-green);
+            font-family: 'Courier New', monospace;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        .message-button {
+            background-color: transparent;
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            color: var(--neon-green);
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+
+        .message-button:hover {
+            background-color: rgba(57, 255, 20, 0.1);
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .error {
+            color: #ff4444;
+            margin-top: 10px;
+            text-align: center;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #mainContent {
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        #mainContent.visible {
+            opacity: 1;
+        }
+
+        .ip-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .ip-table th,
+        .ip-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(57, 255, 20, 0.2);
+        }
+
+        .ip-table th {
+            background-color: rgba(0, 17, 0, 0.5);
+            color: var(--neon-green);
+            font-weight: normal;
+        }
+
+        .ip-table tr:hover {
+            background-color: rgba(57, 255, 20, 0.05);
+        }
+
+        .ip-table .status-active {
+            color: var(--neon-green);
+        }
+
+        .ip-table .status-blocked {
+            color: #ff4444;
+        }
+
+        .ip-actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .ip-actions .message-input {
+            flex: 1;
+        }
+
+        .ip-actions .message-button {
+            width: auto;
+            min-width: 100px;
+        }
+
+        .ip-table .message-button {
+            padding: 4px 8px;
+            font-size: 0.9em;
+        }
+
+        .ip-list-container {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        .ip-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .ip-actions .message-input {
+            flex: 1;
+            max-width: 200px;
+        }
+
+        .ip-actions .message-button {
+            padding: 8px 16px;
+            min-width: 80px;
+        }
+
+        .ip-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Courier New', monospace;
+        }
+
+        .ip-table th,
+        .ip-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(57, 255, 20, 0.2);
+            white-space: nowrap;
+        }
+
+        .ip-table th {
+            background-color: rgba(0, 17, 0, 0.5);
+            color: var(--neon-green);
+            font-weight: normal;
+        }
+
+        .ip-table tr:hover {
+            background-color: rgba(57, 255, 20, 0.05);
+        }
+
+        .text-red-500 {
+            color: #ff4444;
+        }
+
+        .text-neon-green {
+            color: var(--neon-green);
+        }
+    </style>
+</head>
+<body>
+    <div id="loginForm" class="login-container">
+        <div class="login-panel">
+            <h2 class="text-center mb-4">Admin Login</h2>
+            <input type="password" id="passwordInput" class="message-input" placeholder="Enter admin password">
+            <button id="loginButton" class="message-button">Login</button>
+            <div id="loginError" class="error hidden">Invalid password</div>
+        </div>
+    </div>
+
+    <div id="mainContent" class="container hidden">
+        <div class="status-panel">
+            <div class="status-header">
+                <h1>Server Status</h1>
+                <div class="status-indicator">
+                    <div class="dot"></div>
+                    <span id="connectionStatus">Connected</span>
+                </div>
+            </div>
+            <div class="status-grid" id="statusGrid">
+                <!-- Status items will be populated here -->
+            </div>
+        </div>
+
+        <div class="status-panel">
+            <div class="status-header">
+                <h1>IP Management</h1>
+                <div class="ip-actions">
+                    <input type="text" id="ipInput" class="message-input" placeholder="Enter IP to block/unblock...">
+                    <button id="blockIpBtn" class="message-button">Block</button>
+                    <button id="unblockIpBtn" class="message-button">Unblock</button>
+                </div>
+            </div>
+            <div class="ip-list-container">
+                <table class="ip-table">
+                    <thead>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>Time</th>
+                            <th>Requests</th>
+                            <th>Status</th>
+                            <th>Last Request</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ipList">
+                        <!-- IP list will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="message-panel">
+            <h2>System Message</h2>
+            <input type="text" id="messageInput" class="message-input" placeholder="Type system message...">
+            <button id="sendButton" class="message-button">Send Message</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let loginAttempts = 0;
+        const MAX_LOGIN_ATTEMPTS = 5;
+        const LOCKOUT_TIME = 15 * 60 * 1000; // 15 minutes
+        let lockoutUntil = 0;
+
+        async function handleLogin() {
+            const now = Date.now();
+            if (now < lockoutUntil) {
+                const minutesLeft = Math.ceil((lockoutUntil - now) / 60000);
+                loginError.textContent = `Too many failed attempts. Please try again in ${minutesLeft} minutes.`;
+                loginError.classList.remove('hidden');
+                return;
+            }
+
+            const password = passwordInput.value.trim();
+            if (!password) {
+                loginError.textContent = 'Please enter a password';
+                loginError.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                console.log('Attempting login...');
+                const response = await fetch('/admin/health', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${password}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    console.log('Login successful');
+                    loginAttempts = 0;
+                    localStorage.setItem('adminPassword', password);
+                    loginForm.classList.add('hidden');
+                    mainContent.classList.remove('hidden');
+                    setTimeout(() => mainContent.classList.add('visible'), 100);
+                    initializeAdmin();
+                } else {
+                    console.log('Login failed');
+                    loginAttempts++;
+                    
+                    if (loginAttempts >= MAX_LOGIN_ATTEMPTS) {
+                        lockoutUntil = now + LOCKOUT_TIME;
+                        loginError.textContent = 'Too many failed attempts. Please try again in 15 minutes.';
+                    } else {
+                        loginError.textContent = `Invalid password. ${MAX_LOGIN_ATTEMPTS - loginAttempts} attempts remaining.`;
+                    }
+                    loginError.classList.remove('hidden');
+                    passwordInput.value = '';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                loginError.textContent = 'Failed to connect to server';
+                loginError.classList.remove('hidden');
+            }
+        }
+
+        loginButton.addEventListener('click', handleLogin);
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleLogin();
+        });
+
+        // Check if already logged in
+        const savedPassword = localStorage.getItem('adminPassword');
+        if (savedPassword) {
+            console.log('Found saved password, attempting auto-login...');
+            fetch('/admin/health', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${savedPassword}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            })
+            .then(async response => {
+                console.log('Auto-login response status:', response.status);
+                if (response.ok) {
+                    console.log('Auto-login successful');
+                    loginForm.classList.add('hidden');
+                    mainContent.classList.remove('hidden');
+                    setTimeout(() => mainContent.classList.add('visible'), 100);
+                    initializeAdmin();
+                } else {
+                    console.log('Auto-login failed, clearing saved password');
+                    localStorage.removeItem('adminPassword');
+                    const data = await response.json();
+                    loginError.textContent = data.error || 'Session expired, please login again';
+                    loginError.classList.remove('hidden');
+                }
+            }).catch(error => {
+                console.error('Auto-login error:', error);
+                localStorage.removeItem('adminPassword');
+                loginError.textContent = 'Failed to connect to server';
+                loginError.classList.remove('hidden');
+            });
+        }
+
+        function initializeAdmin() {
+            const statusGrid = document.getElementById('statusGrid');
+            const messageInput = document.getElementById('messageInput');
+            const sendButton = document.getElementById('sendButton');
+            const connectionStatus = document.getElementById('connectionStatus');
+
+            let lastLatency = 0;
+            let healthCheckInterval;
+
+            async function checkHealth() {
+                try {
+                    const start = Date.now();
+                    const response = await fetch('/admin/health', {
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Health check failed');
+                    }
+
+                    const data = await response.json();
+                    lastLatency = Date.now() - start;
+                    
+                    updateStatusGrid(data);
+                    connectionStatus.textContent = 'Connected';
+                    connectionStatus.classList.remove('error');
+                } catch (error) {
+                    console.error('Health check error:', error);
+                    connectionStatus.textContent = 'Disconnected';
+                    connectionStatus.classList.add('error');
+                }
+            }
+
+            function updateStatusGrid(data) {
+                const items = [
+                    { label: 'Environment', value: data.environment },
+                    { label: 'Uptime', value: data.uptime.formatted },
+                    { label: 'Active Connections', value: data.connections.active },
+                    { label: 'Active Users', value: data.connections.users },
+                    { label: 'Latency', value: `${lastLatency}ms` },
+                    { label: 'Memory Usage', value: `${Math.round(data.memory.heapUsed / 1024 / 1024)}MB` },
+                    { label: 'Socket Transport', value: data.socket.transports.join(', ') },
+                    { label: 'Last Update', value: new Date().toLocaleTimeString() }
+                ];
+
+                statusGrid.innerHTML = items.map(item => `
+                    <div class="status-item">
+                        <div class="status-label">${item.label}</div>
+                        <div class="status-value">${item.value}</div>
+                    </div>
+                `).join('');
+            }
+
+            async function sendSystemMessage() {
+                const message = messageInput.value.trim();
+                if (!message) return;
+
+                try {
+                    const response = await fetch('/admin/message', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        },
+                        body: JSON.stringify({ message })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to send message');
+                    }
+
+                    messageInput.value = '';
+                } catch (error) {
+                    console.error('Error sending message:', error);
+                    alert('Failed to send system message');
+                }
+            }
+
+            async function loadIPStats() {
+                try {
+                    const response = await fetch('/admin/ips', {
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        }
+                    });
+                    
+                    if (!response.ok) throw new Error('Failed to fetch IP stats');
+                    
+                    const { data } = await response.json();
+                    const ipList = document.getElementById('ipList');
+                    
+                    ipList.innerHTML = `
+                        <table class="ip-table">
+                            <thead>
+                                <tr>
+                                    <th>IP Address</th>
+                                    <th>Time</th>
+                                    <th>Requests</th>
+                                    <th>Status</th>
+                                    <th>Last Request</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${Object.entries(data)
+                                    .map(([ip, stats]) => {
+                                        const lastRequestDate = new Date(stats.lastRequest);
+                                        return `
+                                            <tr>
+                                                <td>${ip}</td>
+                                                <td>${lastRequestDate.toLocaleTimeString()}</td>
+                                                <td>${stats.requests}</td>
+                                                <td class="${stats.blocked ? 'text-red-500' : 'text-neon-green'}">
+                                                    ${stats.blocked ? 'Blocked' : 'Active'}
+                                                </td>
+                                                <td>${lastRequestDate.toLocaleDateString()}</td>
+                                                <td>
+                                                    <button onclick="handleIPAction('${stats.blocked ? 'unblock' : 'block'}', '${ip}')" 
+                                                            class="message-button">
+                                                        ${stats.blocked ? 'Unblock' : 'Block'}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } catch (error) {
+                    console.error('Error loading IP stats:', error);
+                }
+            }
+
+            async function handleIPAction(action, ip) {
+                const targetIp = ip || document.getElementById('ipInput').value.trim();
+                if (!targetIp) {
+                    alert('Please enter an IP address');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/admin/ips/${action}/${targetIp}`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        }
+                    });
+
+                    if (!response.ok) throw new Error(`Failed to ${action} IP`);
+
+                    document.getElementById('ipInput').value = '';
+                    loadIPStats();
+                } catch (error) {
+                    console.error(`Error ${action}ing IP:`, error);
+                    alert(`Failed to ${action} IP`);
+                }
+            }
+
+            sendButton.addEventListener('click', sendSystemMessage);
+            messageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendSystemMessage();
+            });
+
+            document.getElementById('blockIpBtn').addEventListener('click', () => handleIPAction('block'));
+            document.getElementById('unblockIpBtn').addEventListener('click', () => handleIPAction('unblock'));
+
+            // Initial checks
+            checkHealth();
+            loadIPStats();
+
+            // Set up periodic updates
+            healthCheckInterval = setInterval(checkHealth, 5000);
+            setInterval(loadIPStats, 10000);
+
+            // Clean up on page unload
+            window.addEventListener('unload', () => {
+                clearInterval(healthCheckInterval);
+            });
+        }
+    </script>
+</body>
+</html> 

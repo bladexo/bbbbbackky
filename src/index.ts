@@ -9,6 +9,8 @@ import path from 'path';
 import helmet from 'helmet';
 import xss from 'xss';
 import dotenv from 'dotenv';
+import { ipMiddleware } from './middleware/ipMiddleware.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
@@ -30,18 +32,28 @@ const allowedOrigins = isProd
   ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
+// Apply CORS configuration before other middleware
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      connectSrc: ["'self'", "wss:", "ws:", ...allowedOrigins],
+      connectSrc: ["'self'", "wss:", "ws:"],
       imgSrc: ["'self'", "data:", "blob:"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", "data:"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
-      frameSrc: ["'none'"]
+      frameSrc: ["'none'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: []
     },
   },
   crossOriginEmbedderPolicy: false,
@@ -79,36 +91,72 @@ app.get('/health', (_req, res) => {
   res.json({ 
     status: 'ok',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV,
+    cors: {
+      allowedOrigins,
+      corsEnabled: true
+    },
+    socket: {
+      transports: ['websocket', 'polling'],
+      path: '/socket.io/',
+      pingInterval: 25000,
+      pingTimeout: 20000
+    }
   });
 });
 
-// Apply CORS configuration
-app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST'],
-  credentials: true
-}));
+// Test CORS endpoint
+app.options('/test-cors', cors());
+app.get('/test-cors', (req, res) => {
+  res.json({
+    success: true,
+    origin: req.headers.origin,
+    message: 'CORS is working'
+  });
+});
 
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
   cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: true
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true,
+    allowedHeaders: ["*"]
   },
+  allowEIO3: true,
+  path: '/socket.io/',
   connectionStateRecovery: {
-    maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+    maxDisconnectionDuration: 2 * 60 * 1000,
   },
-  transports: ['websocket', 'polling'] // Enable both WebSocket and polling
+  transports: ['websocket', 'polling'],
+  pingInterval: 25000,
+  pingTimeout: 20000
 });
 
 // Simple user tracking
 const activeUsers = new Map<string, { username: string; color: string }>();
 
-// Sanitize user input function
+// Sanitize user input function with additional security measures
 const sanitizeInput = (input: string): string => {
-  return xss(input.trim());
+  if (typeof input !== 'string') return '';
+  
+  // Remove any potential script tags and attributes
+  input = input.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+              .replace(/<[^>]*>/g, ''); // Remove HTML tags
+              
+  // Sanitize using xss package
+  input = xss(input.trim(), {
+    whiteList: {}, // No HTML allowed
+    stripIgnoreTag: true,
+    stripIgnoreTagBody: ['script', 'style', 'xml'],
+  });
+  
+  // Additional checks
+  if (input.length > 1000) {
+    input = input.substring(0, 1000);
+  }
+  
+  return input;
 };
 
 // Connection logging
@@ -144,11 +192,7 @@ io.on('connection', (socket) => {
     console.log(`User registered: ${username} (${socket.id})`);
     console.log('Active users:', activeUsers.size);
 
-    io.emit('user_joined', {
-      id: socket.id,
-      username
-    });
-
+    // Only emit online count update
     io.emit('online_count', { count: activeUsers.size });
   });
 
@@ -159,19 +203,32 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Sanitize message content
-    if (typeof data.content === 'string') {
-      data.content = sanitizeInput(data.content);
+    // Validate message structure
+    if (!data || typeof data !== 'object') {
+      socket.emit('error', 'Invalid message format');
+      return;
     }
 
-    // Basic message validation
-    if (!data.content || data.content.length > 1000) {
-      socket.emit('error', 'Invalid message length');
+    // Sanitize message content
+    if (typeof data.content !== 'string' || !data.content.trim()) {
+      socket.emit('error', 'Invalid message content');
+      return;
+    }
+
+    data.content = sanitizeInput(data.content);
+
+    // Validate message length
+    if (data.content.length > 1000) {
+      socket.emit('error', 'Message too long');
       return;
     }
 
     // Validate reply if present
     if (data.replyTo) {
+      if (typeof data.replyTo !== 'object' || !data.replyTo.id || !data.replyTo.content) {
+        socket.emit('error', 'Invalid reply format');
+        return;
+      }
       data.replyTo.content = sanitizeInput(data.replyTo.content);
     }
 
@@ -250,6 +307,111 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// Admin authentication middleware
+const adminAuth: RequestHandler = (req, res, next): void => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Unauthorized - No token provided' });
+    return;
+  }
+
+  const token = authHeader.split(' ')[1];
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  
+  if (!adminPassword) {
+    console.error('ADMIN_PASSWORD not set in environment variables');
+    res.status(500).json({ error: 'Server configuration error' });
+    return;
+  }
+
+  if (token !== adminPassword) {
+    res.status(401).json({ error: 'Invalid credentials' });
+    return;
+  }
+
+  next();
+};
+
+// Apply IP middleware to all routes
+app.use(ipMiddleware);
+
+// Admin status page - serve without authentication
+app.get('/admin/status', (_req, res) => {
+  const statusPath = join(__dirname, '../public/admin-status.html');
+  if (fs.existsSync(statusPath)) {
+    res.sendFile(statusPath);
+  } else {
+    res.status(404).send('Admin status page not found');
+  }
+});
+
+// Admin API endpoints - require authentication
+app.get('/admin/health', adminAuth, (req, res) => {
+  const connectedSockets = io.sockets.sockets.size;
+  const uptime = process.uptime();
+  
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV,
+    uptime: {
+      seconds: Math.floor(uptime),
+      formatted: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`
+    },
+    memory: process.memoryUsage(),
+    connections: {
+      active: connectedSockets,
+      users: activeUsers.size
+    },
+    cors: {
+      allowedOrigins,
+      corsEnabled: true
+    },
+    socket: {
+      transports: ['websocket', 'polling'],
+      path: '/socket.io/',
+      pingInterval: 25000,
+      pingTimeout: 20000
+    }
+  });
+});
+
+// Admin message endpoint
+app.post('/admin/message', adminAuth, (req, res): void => {
+  const { message } = req.body;
+  
+  if (!message || typeof message !== 'string' || message.length > 1000) {
+    res.status(400).json({ error: 'Invalid message' });
+    return;
+  }
+
+  const systemMessageId = `backend-${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Create message data with consistent format
+  const messageData = {
+    id: systemMessageId,
+    senderId: 'system',
+    username: 'SYSTEM',
+    content: sanitizeInput(message),
+    timestamp: Date.now(),
+    userColor: '#39ff14',
+    mentions: [],
+    isSystem: true,
+    type: 'system'
+  };
+
+  // Log the message being sent
+  console.log('[System Message] Sending:', messageData);
+  
+  // Send system message to all clients
+  io.emit('chat_message', messageData);
+
+  res.json({ success: true });
+});
+
+// Admin routes from external file
+app.use('/admin', adminRoutes);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
