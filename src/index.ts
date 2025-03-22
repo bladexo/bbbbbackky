@@ -171,10 +171,36 @@ io.on('connection', (socket) => {
     console.error(`[${new Date().toISOString()}] Socket error for ${socket.id}:`, error);
   });
 
-  socket.on('register', ({ username, color }) => {
+  socket.on('register', async ({ username, color, cfToken }) => {
     // Validate username
     if (!username || typeof username !== 'string' || username.length < 3) {
       socket.emit('error', 'Invalid username');
+      return;
+    }
+
+    // Validate Turnstile token
+    try {
+      const formData = new URLSearchParams();
+      formData.append('secret', process.env.CLOUDFLARE_SECRET_KEY || '');
+      formData.append('response', cfToken);
+      formData.append('remoteip', socket.handshake.address);
+
+      const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+
+      const data = await result.json();
+      if (!data.success) {
+        socket.emit('error', 'Bot validation failed');
+        return;
+      }
+    } catch (error) {
+      console.error('Error validating Turnstile token:', error);
+      socket.emit('error', 'Failed to validate bot protection');
       return;
     }
 
