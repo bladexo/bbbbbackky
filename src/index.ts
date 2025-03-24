@@ -174,33 +174,46 @@ io.on('connection', (socket) => {
   socket.on('register', async ({ username, color }) => {
     console.log(`[${new Date().toISOString()}] Registration attempt for ${username}`);
 
+    // Validate username
+    if (!username || typeof username !== 'string' || username.length < 3) {
+      console.log(`[${new Date().toISOString()}] Invalid username: ${username}`);
+      socket.emit('error', 'Invalid username');
+      return;
+    }
+
     // Check for existing username
     const usernameTaken = Array.from(activeUsers.values())
       .some(user => user.username.toLowerCase() === username.toLowerCase());
     
     if (usernameTaken) {
+      console.log(`[${new Date().toISOString()}] Username already taken: ${username}`);
       socket.emit('error', 'Username already taken');
       return;
     }
 
-    // Register user
-    activeUsers.set(socket.id, { username, color });
-    console.log(`User registered: ${username} (${socket.id})`);
-    console.log('Active users:', activeUsers.size);
+    try {
+      // Register user
+      activeUsers.set(socket.id, { username, color });
+      console.log(`[${new Date().toISOString()}] User registered: ${username} (${socket.id})`);
+      console.log('[${new Date().toISOString()}] Active users:', activeUsers.size);
 
-    // Emit success event to the user
-    socket.emit('registration_success', { username, color });
+      // Emit success event to the user
+      socket.emit('registration_success', { username, color });
 
-    // Emit user joined event to all clients
-    io.emit('user_joined', {
-      id: socket.id,
-      username,
-      color,
-      onlineCount: activeUsers.size
-    });
+      // Emit user joined event to all clients
+      io.emit('user_joined', {
+        id: socket.id,
+        username,
+        color,
+        onlineCount: activeUsers.size
+      });
 
-    // Emit online count update
-    io.emit('online_count', { count: activeUsers.size });
+      // Emit online count update
+      io.emit('online_count', { count: activeUsers.size });
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during registration:`, error);
+      socket.emit('error', 'Registration failed. Please try again.');
+    }
   });
 
   socket.on('chat_message', (data) => {
