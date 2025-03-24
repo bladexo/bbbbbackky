@@ -213,6 +213,8 @@ io.on('connection', (socket) => {
         socket.emit('error', `Bot validation failed: ${data['error-codes']?.join(', ') || 'Unknown error'}`);
         return;
       }
+
+      console.log(`[${new Date().toISOString()}] Bot validation successful for ${username}`);
     } catch (error) {
       console.error(`[${new Date().toISOString()}] Error validating Turnstile token:`, error);
       socket.emit('error', 'Failed to validate bot protection');
@@ -224,14 +226,15 @@ io.on('connection', (socket) => {
       .some(user => user.username.toLowerCase() === username.toLowerCase());
     
     if (usernameTaken) {
+      console.log(`[${new Date().toISOString()}] Username already taken: ${username}`);
       socket.emit('error', 'Username already taken');
       return;
     }
 
     // Register user
     activeUsers.set(socket.id, { username, color });
-    console.log(`User registered: ${username} (${socket.id})`);
-    console.log('Active users:', activeUsers.size);
+    console.log(`[${new Date().toISOString()}] User registered successfully: ${username} (${socket.id})`);
+    console.log(`[${new Date().toISOString()}] Active users count:`, activeUsers.size);
 
     // Emit success event to the user
     socket.emit('registration_success', { username, color });
