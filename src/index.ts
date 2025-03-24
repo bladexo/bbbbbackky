@@ -172,19 +172,31 @@ io.on('connection', (socket) => {
   });
 
   socket.on('register', async ({ username, color, cfToken }) => {
+    console.log(`[${new Date().toISOString()}] Registration attempt for ${username}`);
+    console.log(`[${new Date().toISOString()}] Received cfToken:`, cfToken ? 'Token present' : 'No token');
+    
     // Validate username
     if (!username || typeof username !== 'string' || username.length < 3) {
+      console.log(`[${new Date().toISOString()}] Invalid username: ${username}`);
       socket.emit('error', 'Invalid username');
       return;
     }
 
     // Validate Turnstile token
+    if (!cfToken) {
+      console.log(`[${new Date().toISOString()}] No Cloudflare token provided`);
+      socket.emit('error', 'Bot verification token missing');
+      return;
+    }
+
     try {
+      console.log(`[${new Date().toISOString()}] Validating Turnstile token for ${username}`);
       const formData = new URLSearchParams();
       formData.append('secret', process.env.CLOUDFLARE_SECRET_KEY || '');
       formData.append('response', cfToken);
       formData.append('remoteip', socket.handshake.address);
 
+      console.log(`[${new Date().toISOString()}] Sending request to Cloudflare with token length: ${cfToken.length}`);
       const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
         method: 'POST',
         body: formData,
@@ -194,12 +206,15 @@ io.on('connection', (socket) => {
       });
 
       const data = await result.json();
+      console.log(`[${new Date().toISOString()}] Cloudflare response:`, data);
+      
       if (!data.success) {
-        socket.emit('error', 'Bot validation failed');
+        console.log(`[${new Date().toISOString()}] Bot validation failed for ${username}. Response:`, data);
+        socket.emit('error', `Bot validation failed: ${data['error-codes']?.join(', ') || 'Unknown error'}`);
         return;
       }
     } catch (error) {
-      console.error('Error validating Turnstile token:', error);
+      console.error(`[${new Date().toISOString()}] Error validating Turnstile token:`, error);
       socket.emit('error', 'Failed to validate bot protection');
       return;
     }
