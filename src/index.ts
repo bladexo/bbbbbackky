@@ -218,7 +218,18 @@ io.on('connection', (socket) => {
     console.log(`User registered: ${username} (${socket.id})`);
     console.log('Active users:', activeUsers.size);
 
-    // Only emit online count update
+    // Emit success event to the user
+    socket.emit('registration_success', { username, color });
+
+    // Emit user joined event to all clients
+    io.emit('user_joined', {
+      id: socket.id,
+      username,
+      color,
+      onlineCount: activeUsers.size
+    });
+
+    // Emit online count update
     io.emit('online_count', { count: activeUsers.size });
   });
 
