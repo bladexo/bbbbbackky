@@ -203,6 +203,18 @@ io.on('connection', (socket) => {
       return;
     }
 
+        // Check if user is blocked
+    if (usernameController.isBlocked(user.username)) {
+      socket.emit('error', 'You are currently blocked from sending messages');
+      // Emit mute status immediately
+      socket.emit('user_muted', {
+        username: user.username,
+        duration: usernameController.getBlockedUsers()[user.username.toLowerCase()].duration,
+        muteUntil: usernameController.getBlockedUsers()[user.username.toLowerCase()].expiresAt
+      });
+      return;
+    }
+
     // Validate message structure
     if (!data || typeof data !== 'object') {
       socket.emit('error', 'Invalid message format');
@@ -304,6 +316,18 @@ io.on('connection', (socket) => {
       });
 
       io.emit('online_count', { count: activeUsers.size });
+    }
+  });
+});
+
+  // Add unmute event handler
+  socket.on('user_unmuted', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (user && user.username === data.username) {
+      socket.emit('user_unmuted', {
+        username: user.username,
+        timestamp: Date.now()
+      });
     }
   });
 });
