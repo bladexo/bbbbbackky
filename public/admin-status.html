@@ -313,6 +313,35 @@
             </div>
         </div>
 
+        <div class="status-panel">
+            <div class="status-header">
+                <h1>Username Management</h1>
+                <div class="ip-actions">
+                    <input type="text" id="usernameInput" class="message-input" placeholder="Enter username to block...">
+                    <input type="number" id="blockDuration" class="message-input" placeholder="Duration (minutes)" min="1" style="width: 150px;">
+                    <button id="blockUsernameBtn" class="message-button">Block</button>
+                    <button id="unblockUsernameBtn" class="message-button">Unblock</button>
+                </div>
+            </div>
+            <div class="ip-list-container">
+                <table class="ip-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Blocked At</th>
+                            <th>Duration</th>
+                            <th>Expires</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usernameList">
+                        <!-- Username list will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <div class="message-panel">
             <h2>System Message</h2>
             <input type="text" id="messageInput" class="message-input" placeholder="Type system message...">
@@ -322,6 +351,7 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
+        const SERVER_URL = window.location.origin;
         let loginAttempts = 0;
         const MAX_LOGIN_ATTEMPTS = 5;
         const LOCKOUT_TIME = 15 * 60 * 1000; // 15 minutes
@@ -345,7 +375,7 @@
 
             try {
                 console.log('Attempting login...');
-                const response = await fetch('/admin/health', {
+                const response = await fetch(`${SERVER_URL}/admin/health`, {
                     method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${password}`,
@@ -377,7 +407,7 @@
                 }
             } catch (error) {
                 console.error('Login error:', error);
-                loginError.textContent = 'Failed to connect to server';
+                loginError.textContent = 'Failed to connect to server. Make sure the server is running.';
                 loginError.classList.remove('hidden');
             }
         }
@@ -391,7 +421,7 @@
         const savedPassword = localStorage.getItem('adminPassword');
         if (savedPassword) {
             console.log('Found saved password, attempting auto-login...');
-            fetch('/admin/health', {
+            fetch(`${SERVER_URL}/admin/health`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${savedPassword}`,
@@ -434,7 +464,7 @@
             async function checkHealth() {
                 try {
                     const start = Date.now();
-                    const response = await fetch('/admin/health', {
+                    const response = await fetch(`${SERVER_URL}/admin/health`, {
                         headers: {
                             'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
                         }
@@ -482,7 +512,7 @@
                 if (!message) return;
 
                 try {
-                    const response = await fetch('/admin/message', {
+                    const response = await fetch(`${SERVER_URL}/admin/message`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -504,7 +534,7 @@
 
             async function loadIPStats() {
                 try {
-                    const response = await fetch('/admin/ips', {
+                    const response = await fetch(`${SERVER_URL}/admin/ips`, {
                         headers: {
                             'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
                         }
@@ -565,7 +595,7 @@
                 }
 
                 try {
-                    const response = await fetch(`/admin/ips/${action}/${targetIp}`, {
+                    const response = await fetch(`${SERVER_URL}/admin/ips/${action}/${targetIp}`, {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
@@ -582,6 +612,87 @@
                 }
             }
 
+            async function loadUsernameStats() {
+                try {
+                    const response = await fetch(`${SERVER_URL}/admin/usernames`, {
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        }
+                    });
+                    
+                    if (!response.ok) throw new Error('Failed to fetch username stats');
+                    
+                    const { data } = await response.json();
+                    const usernameList = document.getElementById('usernameList');
+                    
+                    usernameList.innerHTML = Object.entries(data)
+                        .map(([username, stats]) => {
+                            const blockedAt = new Date(stats.blockedAt);
+                            const expiresAt = new Date(stats.expiresAt);
+                            const now = new Date();
+                            const isExpired = expiresAt < now;
+                            
+                            return `
+                                <tr>
+                                    <td>${username}</td>
+                                    <td>${blockedAt.toLocaleString()}</td>
+                                    <td>${stats.duration} minutes</td>
+                                    <td>${expiresAt.toLocaleString()}</td>
+                                    <td class="${isExpired ? 'text-neon-green' : 'text-red-500'}">
+                                        ${isExpired ? 'Active' : 'Blocked'}
+                                    </td>
+                                    <td>
+                                        <button onclick="handleUsernameAction('${isExpired ? 'block' : 'unblock'}', '${username}')" 
+                                                class="message-button">
+                                            ${isExpired ? 'Block' : 'Unblock'}
+                                        </button>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('') || '<tr><td colspan="6">No blocked usernames</td></tr>';
+                } catch (error) {
+                    console.error('Error loading username stats:', error);
+                }
+            }
+
+            async function handleUsernameAction(action, username) {
+                const targetUsername = username || document.getElementById('usernameInput').value.trim();
+                if (!targetUsername) {
+                    alert('Please enter a username');
+                    return;
+                }
+
+                const duration = action === 'block' ? 
+                    document.getElementById('blockDuration').value : undefined;
+
+                if (action === 'block' && (!duration || duration < 1)) {
+                    alert('Please enter a valid duration in minutes');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${SERVER_URL}/admin/usernames/${action}/${targetUsername}`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ duration: parseInt(duration) })
+                    });
+
+                    if (!response.ok) throw new Error(`Failed to ${action} username`);
+
+                    document.getElementById('usernameInput').value = '';
+                    if (action === 'block') {
+                        document.getElementById('blockDuration').value = '';
+                    }
+                    loadUsernameStats();
+                } catch (error) {
+                    console.error(`Error ${action}ing username:`, error);
+                    alert(`Failed to ${action} username`);
+                }
+            }
+
             sendButton.addEventListener('click', sendSystemMessage);
             messageInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') sendSystemMessage();
@@ -589,14 +700,18 @@
 
             document.getElementById('blockIpBtn').addEventListener('click', () => handleIPAction('block'));
             document.getElementById('unblockIpBtn').addEventListener('click', () => handleIPAction('unblock'));
+            document.getElementById('blockUsernameBtn').addEventListener('click', () => handleUsernameAction('block'));
+            document.getElementById('unblockUsernameBtn').addEventListener('click', () => handleUsernameAction('unblock'));
 
             // Initial checks
             checkHealth();
             loadIPStats();
+            loadUsernameStats();
 
             // Set up periodic updates
             healthCheckInterval = setInterval(checkHealth, 5000);
             setInterval(loadIPStats, 10000);
+            setInterval(loadUsernameStats, 10000);
 
             // Clean up on page unload
             window.addEventListener('unload', () => {
