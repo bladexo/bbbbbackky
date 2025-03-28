@@ -17,6 +17,11 @@ import { usernameController } from './routes/adminRoutes.js';
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
 dotenv.config({ path: envFile });
 
+// Add debug logging for environment variables
+console.log('Environment:', process.env.NODE_ENV);
+console.log('Admin password set:', !!process.env.ADMIN_PASSWORD);
+console.log('Using env file:', envFile);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -204,10 +209,10 @@ io.on('connection', (socket) => {
       return;
     }
 
-        // Check if user is blocked
+    // Check if user is blocked
     if (usernameController.isBlocked(user.username)) {
       socket.emit('error', 'You are currently blocked from sending messages');
-      // Emit mute status immediately
+      // Emit mute status immediately 
       socket.emit('user_muted', {
         username: user.username,
         duration: usernameController.getBlockedUsers()[user.username.toLowerCase()].duration,
@@ -319,7 +324,6 @@ io.on('connection', (socket) => {
       io.emit('online_count', { count: activeUsers.size });
     }
   });
-});
 
   // Add unmute event handler
   socket.on('user_unmuted', (data) => {
