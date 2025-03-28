@@ -11,6 +11,7 @@ import xss from 'xss';
 import dotenv from 'dotenv';
 import { ipMiddleware } from './middleware/ipMiddleware.js';
 import adminRoutes from './routes/adminRoutes.js';
+import { usernameController } from './routes/adminRoutes.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
