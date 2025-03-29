@@ -14,7 +14,7 @@ import adminRoutes from './routes/adminRoutes.js';
 import { usernameController } from './routes/adminRoutes.js';
 
 // Load environment variables based on NODE_ENV
-const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
 dotenv.config({ path: envFile });
 
 // Add debug logging for environment variables
@@ -25,7 +25,7 @@ console.log('Using env file:', envFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const app = express();
+const app = express(); 
 const httpServer = createServer(app);
 
 // Configure security headers with proper CSP
@@ -36,7 +36,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
   ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
-  : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+  : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
 app.use(cors({
@@ -51,14 +51,14 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      connectSrc: ["'self'", "wss:", "ws:"],
+      connectSrc: ["'self'", "wss:", "ws:", "http://localhost:8000", "http://192.168.60.16:8000"],
       imgSrc: ["'self'", "data:", "blob:"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", "data:"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
       frameSrc: ["'none'"],
-      formAction: ["'self'"],
+      formAction: ["'self'", "http://localhost:8000", "http://192.168.60.16:8000"],
       upgradeInsecureRequests: []
     },
   },
@@ -124,7 +124,7 @@ app.get('/test-cors', (req, res) => {
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["*"]
@@ -138,6 +138,9 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
   pingTimeout: 20000
 });
+
+// Make io available to routes
+app.set('io', io);
 
 // Simple user tracking
 const activeUsers = new Map<string, { username: string; color: string }>();
@@ -211,12 +214,12 @@ io.on('connection', (socket) => {
 
     // Check if user is blocked
     if (usernameController.isBlocked(user.username)) {
-      socket.emit('error', 'You are currently blocked from sending messages');
       // Emit mute status immediately 
+      const muteInfo = usernameController.getBlockedUsers()[user.username.toLowerCase()];
       socket.emit('user_muted', {
         username: user.username,
-        duration: usernameController.getBlockedUsers()[user.username.toLowerCase()].duration,
-        muteUntil: usernameController.getBlockedUsers()[user.username.toLowerCase()].expiresAt
+        duration: muteInfo.duration,
+        muteUntil: muteInfo.expiresAt
       });
       return;
     }
@@ -325,7 +328,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Add unmute event handler
+  // Update unmute event handler
   socket.on('user_unmuted', (data) => {
     const user = activeUsers.get(socket.id);
     if (user && user.username === data.username) {
@@ -335,12 +338,32 @@ io.on('connection', (socket) => {
       });
     }
   });
+
+  // Update check_mute_status handler
+  socket.on('check_mute_status', ({ username }) => {
+    if (usernameController.isBlocked(username)) {
+      const muteInfo = usernameController.getBlockedUsers()[username.toLowerCase()];
+      socket.emit('user_muted', {
+        username,
+        duration: muteInfo.duration,
+        muteUntil: muteInfo.expiresAt
+      });
+    }
+  });
+
+  // Remove the user_muted event listener since system messages are now handled in adminRoutes
+  socket.on('user_muted', ({ username, duration, muteUntil }) => {
+    // No need to emit system message here as it's handled in adminRoutes
+  });
 });
 
 // Admin authentication middleware
 const adminAuth: RequestHandler = (req, res, next): void => {
   const authHeader = req.headers.authorization;
+  console.log('Auth header:', authHeader); // Debug log
+
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.log('No valid auth header found'); // Debug log
     res.status(401).json({ error: 'Unauthorized - No token provided' });
     return;
   }
@@ -348,17 +371,28 @@ const adminAuth: RequestHandler = (req, res, next): void => {
   const token = authHeader.split(' ')[1];
   const adminPassword = process.env.ADMIN_PASSWORD;
   
+  console.log('Admin password set:', !!adminPassword); // Debug log (don't log the actual password)
+  console.log('Token received:', token ? 'Yes' : 'No'); // Debug log
+  
   if (!adminPassword) {
     console.error('ADMIN_PASSWORD not set in environment variables');
-    res.status(500).json({ error: 'Server configuration error' });
+    res.status(500).json({ 
+      error: 'Server configuration error',
+      details: 'ADMIN_PASSWORD environment variable is not set'
+    });
     return;
   }
 
   if (token !== adminPassword) {
-    res.status(401).json({ error: 'Invalid credentials' });
+    console.log('Invalid credentials provided'); // Debug log
+    res.status(401).json({ 
+      error: 'Invalid credentials',
+      details: 'The provided password does not match the admin password'
+    });
     return;
   }
 
+  console.log('Authentication successful'); // Debug log
   next();
 };
 
@@ -515,6 +549,7 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`[${new Date().toISOString()}] Server started`);
   console.log(`[${new Date().toISOString()}] Server running on http://${HOST}:${PORT}`);
   console.log(`[${new Date().toISOString()}] Status page available at http://${HOST}:${PORT}/status`);
+  console.log(`[${new Date().toISOString()}] Admin panel available at http://${HOST}:${PORT}/admin`);
   console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
   console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
 });

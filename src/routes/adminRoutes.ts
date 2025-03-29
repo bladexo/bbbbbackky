@@ -10,14 +10,17 @@ class UsernameBlockController {
     blockedAt: number;
     duration: number;
     expiresAt: number;
+    username: string;
   }> = new Map();
 
   blockUsername(username: string, duration: number) {
     const now = Date.now();
+    const expiresAt = now + (duration * 60 * 1000); // Convert minutes to milliseconds
     this.blockedUsers.set(username.toLowerCase(), {
       blockedAt: now,
-      duration,
-      expiresAt: now + (duration * 60 * 1000) // Convert minutes to milliseconds
+      duration: duration * 60 * 1000, // Store duration in milliseconds
+      expiresAt,
+      username // Store original username to preserve case
     });
   }
 
@@ -88,7 +91,34 @@ router.post('/usernames/block/:username', adminAuthMiddleware, (req, res) => {
     return;
   }
 
+  // Block the username first
   usernameController.blockUsername(username, duration);
+
+  // Get the stored block info
+  const blockInfo = usernameController.getBlockedUsers()[username.toLowerCase()];
+  
+  // Emit mute event and system message to all connected clients
+  const io = req.app.get('io');
+  if (io) {
+    // Emit mute event
+    io.emit('user_muted', {
+      username: blockInfo.username,
+      duration: blockInfo.duration,
+      muteUntil: blockInfo.expiresAt
+    });
+
+    // Emit system message
+    io.emit('chat_message', {
+      id: `mute-${Date.now()}`,
+      username: 'SYSTEM',
+      content: `${blockInfo.username} has been muted for ${Math.ceil(blockInfo.duration / 60000)} minute(s)`,
+      timestamp: Date.now(),
+      userColor: '#ff0000',
+      isSystem: true,
+      type: 'system'
+    });
+  }
+
   res.json({
     success: true,
     message: `Username ${username} has been blocked for ${duration} minutes`,
@@ -100,12 +130,24 @@ router.post('/usernames/unblock/:username', adminAuthMiddleware, (req, res) => {
   const { username } = req.params;
   usernameController.unblockUsername(username);
   
-  // Emit unmute event to all connected clients
+  // Emit unmute event and system message to all connected clients
   const io = req.app.get('io');
   if (io) {
+    // Emit unmute event
     io.emit('user_unmuted', {
       username: username,
       timestamp: new Date().toISOString()
+    });
+
+    // Emit system message
+    io.emit('chat_message', {
+      id: `unmute-${Date.now()}`,
+      username: 'SYSTEM',
+      content: `${username} has been unmuted`,
+      timestamp: Date.now(),
+      userColor: '#00ff00',
+      isSystem: true,
+      type: 'system'
     });
   }
   
