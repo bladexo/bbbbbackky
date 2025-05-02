@@ -40,7 +40,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
+  ? ['https://dworldchat.vercel.app', 'https://bbbbbackky.vercel.app']
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
@@ -142,7 +142,8 @@ const io = new Server(httpServer, {
   pingTimeout: 30000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  maxHttpBufferSize: 1e8 // 100 MB
+  maxHttpBufferSize: 1e8, // 100 MB
+  allowEIO3: true // Enable Engine.IO v3 compatibility
 });
 
 // Add connection error handling
