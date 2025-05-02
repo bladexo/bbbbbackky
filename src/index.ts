@@ -1191,23 +1191,19 @@ const startServer = async () => {
     await connectDB();
     
     // Start the server
-    httpServer.listen(PORT, HOST, () => {
-      console.log(`[${new Date().toISOString()}] Server started`);
-      console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
-      console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
-      console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
-    });
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[${new Date().toISOString()}] Server started`);
+  console.log(`[${new Date().toISOString()}] Server running on http://${HOST}:${PORT}`);
+  console.log(`[${new Date().toISOString()}] Status page available at http://${HOST}:${PORT}/status`);
+  console.log(`[${new Date().toISOString()}] Admin panel available at http://${HOST}:${PORT}/admin`);
+  console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
+  console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
+});
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 };
 
-// Only start the server if we're not in Vercel
-if (process.env.NODE_ENV !== 'production') {
-  startServer();
-}
-
-// Export both app and httpServer for Vercel
-export { app, httpServer };
-export default app;
+// Start the server
+startServer();
