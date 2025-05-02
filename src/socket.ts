@@ -6,6 +6,7 @@ interface User {
   id: string;
   username: string;
   publicKey: string;
+  color?: string;
 }
 
 export const initializeSocket = (httpServer: HTTPServer) => {
@@ -29,64 +30,78 @@ export const initializeSocket = (httpServer: HTTPServer) => {
 
   const users = new Map<string, User>();
 
-  const broadcastUserCount = () => {
-    io.emit('online_users', {
-      users: Array.from(users.values()),
-      count: users.size
-    });
-  };
-
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     console.log('User connected:', socket.id);
 
-    // Send initial online users count to the new connection
     socket.emit('online_users', {
       users: Array.from(users.values()),
       count: users.size
     });
 
-    // Handle user registration with their public key
-    socket.on('register', ({ username, publicKey }: { username: string; publicKey: string }) => {
-      users.set(socket.id, { id: socket.id, username, publicKey });
+    socket.on('register', async ({ username, publicKey, color }: { username: string; publicKey: string; color: string }) => {
+      console.log('User registering:', { username, color });
       
-      // Broadcast user joined and updated count
+      // Store user in memory
+      users.set(socket.id, { 
+        id: socket.id, 
+        username, 
+        publicKey, 
+        color
+      });
+      
       io.emit('user_joined', {
         id: socket.id,
         username,
         onlineCount: users.size
       });
-
-      // Broadcast updated user list
-      broadcastUserCount();
     });
 
-    // Handle encrypted message broadcasting
-    socket.on('chat_message', ({ encryptedMessage, recipientId }) => {
+    socket.on('chat_message', async ({ encryptedMessage, recipientId, content, timestamp }) => {
       const sender = users.get(socket.id);
-      if (!sender) return;
+      if (!sender) {
+        console.log('Message received but no sender found for socket:', socket.id);
+        return;
+      }
 
-      // Broadcast the encrypted message
+      console.log('Processing message from:', sender.username);
+
       io.emit('chat_message', {
         senderId: socket.id,
         senderUsername: sender.username,
         encryptedMessage,
-        timestamp: Date.now()
+        content,
+        timestamp: timestamp || Date.now()
+      });
+    });
+
+    socket.on('message:react', async ({ messageId, reaction }) => {
+      const user = users.get(socket.id);
+      if (!user) {
+        console.log('Reaction received but no user found for socket:', socket.id);
+        return;
+      }
+
+      console.log('Processing reaction from:', user.username);
+      
+      io.emit('reaction:received', {
+        messageId,
+        reaction,
+        username: user.username
       });
     });
 
     // Handle disconnection
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       const user = users.get(socket.id);
       if (user) {
+        console.log('User disconnected:', user.username);
         users.delete(socket.id);
+        
         io.emit('user_left', {
           id: socket.id,
           username: user.username,
           onlineCount: users.size
         });
-        
-        // Broadcast updated user list
-        broadcastUserCount();
       }
     });
 
@@ -104,7 +119,6 @@ export const initializeSocket = (httpServer: HTTPServer) => {
         if (users.has(socket.id)) {
           users.delete(socket.id);
           socket.disconnect(true);
-          broadcastUserCount();
         }
       }, 5000);
 

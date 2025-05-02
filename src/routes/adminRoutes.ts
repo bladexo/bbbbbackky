@@ -1,6 +1,7 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { ipController } from '../middleware/ipMiddleware.js';
 import { adminAuthMiddleware } from '../middleware/adminAuthMiddleware.js';
+import HackAccess from '../models/HackAccess.js';
 
 const router = Router();
 
@@ -201,6 +202,115 @@ router.post('/ips/unblock/:ip', adminAuthMiddleware, (req, res) => {
     message: `IP ${ip} has been unblocked`,
     timestamp: new Date().toISOString()
   });
+});
+
+interface AccessData {
+  type: string;
+  grantedAt: Date;
+  expiresAt: Date | null;
+  isActive: boolean;
+}
+
+interface FormattedList {
+  [username: string]: AccessData;
+}
+
+interface HackAccessBody {
+  username?: string;
+  type: 'free' | 'specific' | 'random';
+  duration?: number;
+}
+
+// Get hack access list
+router.get('/hack-access', adminAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const accessList = await HackAccess.find({ isActive: true });
+    
+    const formattedList = accessList.reduce<FormattedList>((acc, access) => {
+      acc[access.username] = {
+        type: access.type,
+        grantedAt: access.grantedAt,
+        expiresAt: access.expiresAt,
+        isActive: access.isActive
+      };
+      return acc;
+    }, {});
+    
+    res.json({ success: true, data: formattedList });
+  } catch (error) {
+    console.error('Error fetching hack access list:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch hack access list' });
+  }
+});
+
+// Update hack access
+router.post('/hack-access/update', adminAuthMiddleware, async (req: Request<{}, {}, HackAccessBody>, res: Response): Promise<void> => {
+  try {
+    const { username, type, duration } = req.body;
+    
+    if (type === 'specific' && !username) {
+      res.status(400).json({ success: false, error: 'Username required for specific access' });
+      return;
+    }
+
+    // Handle free access type separately since it doesn't need duration
+    if (type === 'free') {
+      await HackAccess.findOneAndUpdate(
+        { username },
+        {
+          type,
+          grantedAt: new Date(),
+          expiresAt: null,
+          isActive: true
+        },
+        { upsert: true }
+      );
+      res.json({ success: true });
+      return;
+    }
+
+    // For non-free types, duration is required and must be a number
+    const durationMinutes = Number(duration);
+    if (isNaN(durationMinutes) || durationMinutes < 1) {
+      res.status(400).json({ success: false, error: 'Valid duration required' });
+      return;
+    }
+
+    // At this point, TypeScript knows durationMinutes is a valid number
+    const expiresAt = new Date(Date.now() + durationMinutes * 60000);
+
+    await HackAccess.findOneAndUpdate(
+      { username },
+      {
+        type,
+        grantedAt: new Date(),
+        expiresAt,
+        isActive: true
+      },
+      { upsert: true }
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating hack access:', error);
+    res.status(500).json({ success: false, error: 'Failed to update hack access' });
+  }
+});
+
+// Revoke hack access
+router.post('/hack-access/revoke/:username', adminAuthMiddleware, async (req: Request<{ username: string }>, res: Response): Promise<void> => {
+  try {
+    const { username } = req.params;
+    await HackAccess.findOneAndUpdate(
+      { username },
+      { isActive: false }
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error revoking hack access:', error);
+    res.status(500).json({ success: false, error: 'Failed to revoke hack access' });
+  }
 });
 
 export default router; 

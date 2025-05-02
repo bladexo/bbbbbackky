@@ -1,6 +1,6 @@
 import express, { RequestHandler } from 'express';
 import { createServer } from 'http';
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -12,6 +12,11 @@ import dotenv from 'dotenv';
 import { ipMiddleware } from './middleware/ipMiddleware.js';
 import adminRoutes from './routes/adminRoutes.js';
 import { usernameController } from './routes/adminRoutes.js';
+import { encodeBase64, decodeBase64 } from 'tweetnacl-util';
+import { connectDB } from './config/database.js';
+import { UserStats } from './models/UserStats.js';
+import HackAccess from './models/HackAccess.js';
+import GlobalStats from './models/GlobalStats.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
@@ -121,7 +126,7 @@ app.get('/test-cors', (req, res) => {
   });
 });
 
-// Initialize Socket.IO with CORS
+// Initialize Socket.IO with CORS and enhanced configuration
 const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
@@ -129,21 +134,40 @@ const io = new Server(httpServer, {
     credentials: true,
     allowedHeaders: ["*"]
   },
-  allowEIO3: true,
   path: '/socket.io/',
   connectionStateRecovery: {
-    maxDisconnectionDuration: 2 * 60 * 1000,
+    maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+    skipMiddlewares: true,
   },
-  transports: ['websocket', 'polling'],
+  pingTimeout: 30000,
   pingInterval: 25000,
-  pingTimeout: 20000
+  transports: ['websocket', 'polling'],
+  maxHttpBufferSize: 1e8 // 100 MB
+});
+
+// Add connection error handling
+io.engine.on("connection_error", (err) => {
+  console.log('Connection error:', err);
 });
 
 // Make io available to routes
 app.set('io', io);
 
-// Simple user tracking
-const activeUsers = new Map<string, { username: string; color: string }>();
+// Simple user tracking with extended stats
+interface UserWithStats {
+  id: string;
+  username: string;
+  color: string;
+  messageCount: number;
+  reactionCount: number;
+  points: number;
+  lastActive: Date;
+}
+
+const activeUsers = new Map<string, UserWithStats>();
+
+// Room metadata storage - maps room IDs and codes to their metadata
+const roomMetadata = new Map();
 
 // Sanitize user input function with additional security measures
 const sanitizeInput = (input: string): string => {
@@ -168,19 +192,173 @@ const sanitizeInput = (input: string): string => {
   return input;
 };
 
-// Connection logging
-io.on('connection', (socket) => {
+// Helper function to broadcast leaderboard
+const broadcastLeaderboard = async (io: Server) => {
+  try {
+    const leaderboard = await UserStats.find()
+      .sort({ points: -1 })
+      .limit(10)
+      .lean();
+    
+  console.log('Broadcasting leaderboard:', leaderboard);
+  io.emit('leaderboard:data', { users: leaderboard });
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+  }
+};
+
+// Helper function to broadcast global stats
+const broadcastGlobalStats = async (io: Server) => {
+  try {
+    // Get global stats from the dedicated collection
+    const globalStats = await GlobalStats.getStats();
+    
+    // Get reaction count from user stats
+    const [reactionStats] = await UserStats.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalReactions: { $sum: '$reactionCount' }
+        }
+      }
+    ]);
+
+    const stats = {
+      totalMessages: globalStats.totalMessages,
+      totalUsers: globalStats.totalUsers,
+      totalReactions: reactionStats?.totalReactions || 0,
+      averageMessagesPerUser: globalStats.totalUsers > 0 
+        ? globalStats.totalMessages / globalStats.totalUsers 
+        : 0
+    };
+
+    io.emit('global_stats:data', stats);
+  } catch (error) {
+    console.error('Error fetching global stats:', error);
+  }
+};
+
+// Add helper function to emit user points
+const emitUserPoints = async (socket: Socket, username: string) => {
+  try {
+    const userStats = await UserStats.findOne({ username }).lean();
+    if (userStats) {
+      socket.emit('user_points_update', { points: userStats.points });
+    }
+  } catch (error) {
+    console.error('Error emitting user points:', error);
+  }
+};
+
+// Enhanced connection handling
+io.on('connection', async (socket) => {
   console.log(`[${new Date().toISOString()}] Client connected: ${socket.id}`);
   
-  socket.on('disconnect', (reason) => {
-    console.log(`[${new Date().toISOString()}] Client disconnected: ${socket.id}, Reason: ${reason}`);
+  // Set up ping/pong for connection monitoring
+  let lastPing = Date.now();
+  
+  socket.on('ping', () => {
+    lastPing = Date.now();
+    socket.emit('pong');
   });
 
+  // Monitor connection health
+  const healthCheck = setInterval(() => {
+    const now = Date.now();
+    if (now - lastPing > 60000) { // No ping for 1 minute
+      console.log(`[${new Date().toISOString()}] Client ${socket.id} health check failed. Last ping: ${new Date(lastPing).toISOString()}`);
+      socket.disconnect(true);
+    }
+  }, 30000);
+
+  // Handle connection errors
   socket.on('error', (error) => {
-    console.error(`[${new Date().toISOString()}] Socket error for ${socket.id}:`, error);
+    console.error(`Socket error for ${socket.id}:`, error);
+    // Attempt to clean up if needed
+    const user = activeUsers.get(socket.id);
+    if (user) {
+      console.log(`Cleaning up user ${user.username} due to socket error`);
+      activeUsers.delete(socket.id);
+      io.emit('online_count', { count: activeUsers.size });
+    }
   });
 
-  socket.on('register', ({ username, color }) => {
+  // Handle disconnection with reason and cleanup
+  socket.on('disconnect', async (reason) => {
+    clearInterval(healthCheck);
+    console.log(`Client ${socket.id} disconnected. Reason: ${reason}`);
+    const user = activeUsers.get(socket.id);
+    if (user) {
+      try {
+        // Keep the user in memory for a short time to allow for reconnection
+        setTimeout(async () => {
+          // Only clean up if the user hasn't reconnected
+          if (activeUsers.get(socket.id)?.username === user.username) {
+            // Update last active time in MongoDB
+            await UserStats.findOneAndUpdate(
+              { username: user.username },
+              { $set: { lastActive: new Date() } }
+            );
+
+            // Clean up user from active users
+            activeUsers.delete(socket.id);
+            
+            // Also clean up any other sockets that might have the same username
+            for (const [socketId, activeUser] of activeUsers.entries()) {
+              if (activeUser.username === user.username) {
+                activeUsers.delete(socketId);
+              }
+            }
+
+            // Update global user count
+            await GlobalStats.updateUserCount(activeUsers.size);
+
+            console.log(`User disconnected: ${user.username} (${socket.id})`);
+            console.log('Active users:', activeUsers.size);
+
+            io.emit('user_left', {
+              id: socket.id,
+              username: user.username,
+              onlineCount: activeUsers.size,
+              reason: reason
+            });
+
+            // Broadcast online count separately to ensure it's received
+            io.emit('online_count', { count: activeUsers.size });
+            await broadcastLeaderboard(io);
+            await broadcastGlobalStats(io);
+          }
+        }, 5000); // Wait 5 seconds before cleanup to allow for quick reconnects
+
+      } catch (error) {
+        console.error('Error handling disconnect:', error);
+      }
+    }
+  });
+
+  // Handle reconnection attempts
+  socket.on('reconnect_attempt', () => {
+    console.log(`Client ${socket.id} attempting to reconnect`);
+  });
+
+  // Handle successful reconnection
+  socket.on('reconnect', () => {
+    console.log(`Client ${socket.id} successfully reconnected`);
+  });
+
+  // Handle failed reconnection
+  socket.on('reconnect_failed', () => {
+    console.error(`Client ${socket.id} failed to reconnect`);
+  });
+
+  // Broadcast current online users immediately on connection
+  io.emit('online_count', { count: activeUsers.size });
+  socket.emit('online_users', {
+    users: Array.from(activeUsers.values()),
+    count: activeUsers.size
+  });
+
+  socket.on('register', async ({ username, color }) => {
     // Validate username
     if (!username || typeof username !== 'string' || username.length < 3) {
       socket.emit('error', 'Invalid username');
@@ -190,22 +368,139 @@ io.on('connection', (socket) => {
     // Check for existing username
     const usernameTaken = Array.from(activeUsers.values())
       .some(user => user.username.toLowerCase() === username.toLowerCase());
-    
     if (usernameTaken) {
       socket.emit('error', 'Username already taken');
       return;
     }
 
-    // Register user
-    activeUsers.set(socket.id, { username, color });
-    console.log(`User registered: ${username} (${socket.id})`);
-    console.log('Active users:', activeUsers.size);
+    try {
+      // First register user in memory
+      const newUser: UserWithStats = {
+        id: socket.id,
+        username,
+        color,
+        messageCount: 0,
+        reactionCount: 0,
+        points: 0,
+        lastActive: new Date()
+      };
+      activeUsers.set(socket.id, newUser);
+      console.log(`User registered in memory: ${username} (${socket.id})`);
+      console.log('Active users count:', activeUsers.size);
 
-    // Only emit online count update
+      // Then add/update in MongoDB
+      const result = await UserStats.findOneAndUpdate(
+        { username },
+        { 
+          $setOnInsert: {
+            username,
+            color,
+            messageCount: 0,
+            reactionCount: 0,
+            points: 0,
+            lastActive: new Date()
+          }
+        },
+        { upsert: true, new: true }
+      );
+
+      // Update global user count
+      await GlobalStats.updateUserCount(activeUsers.size);
+      
+      console.log('User added/updated in MongoDB:', result);
+
+      // Emit events
+      io.emit('user_joined', {
+        id: socket.id,
+        username,
+        onlineCount: activeUsers.size
+      });
+
+      // Broadcast online count separately to ensure it's received
     io.emit('online_count', { count: activeUsers.size });
+
+      // Broadcast updated stats
+      await broadcastLeaderboard(io);
+      await broadcastGlobalStats(io);
+
+    } catch (error) {
+      console.error('Error registering user:', error);
+      activeUsers.delete(socket.id);
+      socket.emit('error', 'Failed to register user');
+    }
   });
 
-  socket.on('chat_message', (data) => {
+  socket.on('chat_message', async (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user) {
+      socket.emit('error', 'Not registered');
+      return;
+    }
+
+    // Sanitize message content
+    if (typeof data.content === 'string') {
+    data.content = sanitizeInput(data.content);
+    }
+
+    // Basic message validation
+    if (!data.content || data.content.length > 1000) {
+      socket.emit('error', 'Invalid message length');
+        return;
+    }
+
+    try {
+      // Update message stats in MongoDB
+      const result = await UserStats.findOneAndUpdate(
+        { username: user.username },
+        { 
+          $inc: { 
+            messageCount: 1,
+            points: 10
+          },
+          $set: { lastActive: new Date() }
+        },
+        { new: true }
+      );
+
+      // Increment global message count
+      await GlobalStats.incrementMessages();
+
+      if (result) {
+        // Update memory stats
+        user.messageCount = result.messageCount;
+        user.points = result.points;
+        user.lastActive = result.lastActive;
+        activeUsers.set(socket.id, user);
+
+        // Emit updated points to the user
+        await emitUserPoints(socket, user.username);
+      }
+
+      // Broadcast message with replyTo data
+      io.emit('chat_message', {
+        id: data.id || `${socket.id}-${Date.now()}`,
+        senderId: socket.id,
+        senderUsername: user.username,
+        content: data.content,
+        timestamp: Date.now(),
+        userColor: user.color,
+        replyTo: data.replyTo,
+        mentions: data.mentions,
+        type: 'user'
+      });
+
+      // Broadcast updated stats
+      await broadcastLeaderboard(io);
+      await broadcastGlobalStats(io);
+
+    } catch (error) {
+      console.error('Error handling message:', error);
+      socket.emit('error', 'Failed to process message');
+    }
+  });
+
+  // Handle room messages
+  socket.on('room_message', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
       socket.emit('error', 'Not registered');
@@ -214,7 +509,6 @@ io.on('connection', (socket) => {
 
     // Check if user is blocked
     if (usernameController.isBlocked(user.username)) {
-      // Emit mute status immediately 
       const muteInfo = usernameController.getBlockedUsers()[user.username.toLowerCase()];
       socket.emit('user_muted', {
         username: user.username,
@@ -225,17 +519,12 @@ io.on('connection', (socket) => {
     }
 
     // Validate message structure
-    if (!data || typeof data !== 'object') {
-      socket.emit('error', 'Invalid message format');
+    if (!data || !data.roomId || !data.content || typeof data.content !== 'string') {
+      socket.emit('error', 'Invalid room message format');
       return;
     }
 
-    // Sanitize message content
-    if (typeof data.content !== 'string' || !data.content.trim()) {
-      socket.emit('error', 'Invalid message content');
-      return;
-    }
-
+    // Sanitize content
     data.content = sanitizeInput(data.content);
 
     // Validate message length
@@ -244,52 +533,138 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Validate reply if present
-    if (data.replyTo) {
-      if (typeof data.replyTo !== 'object' || !data.replyTo.id || !data.replyTo.content) {
-        socket.emit('error', 'Invalid reply format');
-        return;
-      }
-      data.replyTo.content = sanitizeInput(data.replyTo.content);
-    }
+    console.log(`Broadcasting room message from ${user.username} to room: ${data.roomId}:`, 
+      { id: data.id, content: data.content });
+    
+    // Broadcast to everyone in the room, including the sender
+    io.in(data.roomId).emit('room_message_broadcast', {
+      id: data.id,
+      roomId: data.roomId,
+      username: user.username,
+      userColor: user.color,
+      content: data.content,
+      timestamp: Date.now(),
+      mentions: data.mentions,
+      replyTo: data.replyTo,
+      type: 'user'
+    });
 
-    // Extract mentions from message content
-    const mentions: string[] = [];
-    const mentionRegex = /@([\w_]+)/g;
-    let match;
-    while ((match = mentionRegex.exec(data.content)) !== null) {
-      const mentionedUsername = match[1];
-      // Find the user ID for the mentioned username
-      const mentionedUserId = Array.from(activeUsers.entries())
-        .find(([_, user]) => user.username === mentionedUsername)?.[0];
-      if (mentionedUserId) {
-        mentions.push(mentionedUserId);
-      }
-    }
-
-    // Add mentions to the message data
-    const messageData = {
-      ...data,
-      mentions,
-      timestamp: Date.now()
-    };
-
-    io.emit('chat_message', messageData);
-
-    // Send notifications to mentioned users
-    mentions.forEach(userId => {
-      const mentionedSocket = io.sockets.sockets.get(userId);
-      if (mentionedSocket) {
-        mentionedSocket.emit('mention', {
-          type: 'mention',
-          username: user.username,
-          timestamp: Date.now()
-        });
-      }
+    // Also emit back to sender for confirmation
+    socket.emit('message_sent', {
+      success: true,
+      messageId: data.id
     });
   });
 
-    // Handle typing status
+  // Socket.io room joining
+  socket.on('join', (roomId) => {
+    if (typeof roomId === 'string') {
+      console.log(`User ${socket.id} joining room: ${roomId}`);
+      socket.join(roomId);
+      
+      // Confirm room joining was successful
+      socket.emit('room:joined:confirm', { 
+        success: true, 
+        roomId 
+      });
+    }
+  });
+
+  // Handle room metadata sharing
+  socket.on('room:metadata', (data) => {
+    const { roomId, roomCode, name, theme, adminId } = data;
+    
+    if (!roomId || !roomCode || !name) {
+      socket.emit('error', 'Invalid room metadata');
+      return;
+    }
+    
+    console.log(`Storing metadata for room ${roomId} with name "${name}" and code ${roomCode}`);
+    
+    // Store the metadata keyed by both roomId and roomCode
+    const metadataObj = {
+      roomId,
+      roomCode,
+      name,
+      theme,
+      adminId
+    };
+    
+    // Store by ID
+    roomMetadata.set(roomId, metadataObj);
+    
+    // Also store by code for easier lookup
+    roomMetadata.set(roomCode, metadataObj);
+    
+    // Log all stored room metadata for debugging
+    console.log('Current rooms in registry:');
+    roomMetadata.forEach((meta, key) => {
+      console.log(`- ${key}: ${meta.name} (ID: ${meta.roomId}, Code: ${meta.roomCode})`);
+    });
+    
+    // Broadcast metadata to everyone in the room
+    io.in(roomId).emit('room:metadata_update', metadataObj);
+  });
+  
+  // Handle requests for room metadata
+  socket.on('room:request_metadata', (data) => {
+    const { roomCode } = data;
+    
+    if (!roomCode) {
+      socket.emit('error', 'Invalid room code');
+      return;
+    }
+    
+    console.log(`Looking up room with code: ${roomCode}`);
+    console.log('Available room codes:');
+    roomMetadata.forEach((meta, key) => {
+      console.log(`- ${key}: ${meta.name} (ID: ${meta.roomId}, Code: ${meta.roomCode})`);
+    });
+    
+    // First try direct lookup by code
+    let metadata = roomMetadata.get(roomCode);
+    
+    // If not found, try case-insensitive search through all entries
+    if (!metadata) {
+      const normalizedCode = roomCode.toUpperCase();
+      roomMetadata.forEach((meta, key) => {
+        if (typeof key === 'string' && key.toUpperCase() === normalizedCode) {
+          metadata = meta;
+        }
+        if (meta.roomCode && meta.roomCode.toUpperCase() === normalizedCode) {
+          metadata = meta;
+        }
+      });
+    }
+    
+    if (metadata) {
+      console.log(`Found metadata for room ${metadata.roomId} with name "${metadata.name}" for code ${roomCode}`);
+      
+      // Send metadata only to the requesting client
+      socket.emit('room:metadata_update', metadata);
+    } else {
+      console.log(`No metadata found for room code ${roomCode}`);
+      socket.emit('error', `No room found with code: ${roomCode}`);
+    }
+  });
+  
+  // Handle room leaving
+  socket.on('leave', (roomId) => {
+    if (typeof roomId === 'string') {
+      console.log(`User ${socket.id} leaving room: ${roomId}`);
+      socket.leave(roomId);
+    }
+  });
+
+  // Alternative room joining event name
+  socket.on('socket:join-room', (roomId) => {
+    if (typeof roomId === 'string') {
+      console.log(`User ${socket.id} joining room via socket:join-room: ${roomId}`);
+      socket.join(roomId);
+    }
+  });
+
+  // Handle typing status
   socket.on('typing_start', () => {
     const user = activeUsers.get(socket.id);
     if (user) {
@@ -309,22 +684,6 @@ io.on('connection', (socket) => {
       socket.broadcast.emit('user_stopped_typing', {
         id: socket.id
       });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const user = activeUsers.get(socket.id);
-    if (user) {
-      activeUsers.delete(socket.id);
-      console.log(`User disconnected: ${user.username} (${socket.id})`);
-      console.log('Active users:', activeUsers.size);
-
-      io.emit('user_left', {
-        id: socket.id,
-        username: user.username
-      });
-
-      io.emit('online_count', { count: activeUsers.size });
     }
   });
 
@@ -354,6 +713,286 @@ io.on('connection', (socket) => {
   // Remove the user_muted event listener since system messages are now handled in adminRoutes
   socket.on('user_muted', ({ username, duration, muteUntil }) => {
     // No need to emit system message here as it's handled in adminRoutes
+  });
+
+  // Add server-side handler for message reactions
+  socket.on('message_reaction', async (data) => {
+    const reactor = activeUsers.get(socket.id);
+    if (!reactor) {
+      socket.emit('error', 'Not registered');
+      return;
+    }
+    
+    const { messageId, reactionType, messageAuthorUsername, roomId } = data;
+    
+    if (!messageId || !reactionType || !messageAuthorUsername) {
+      console.error('Missing reaction data:', { messageId, reactionType, messageAuthorUsername });
+      socket.emit('error', 'Missing reaction data');
+      return;
+    }
+    
+    try {
+      // First, verify we're not liking our own message
+      if (reactor.username === messageAuthorUsername) {
+        console.log('Self-reaction attempt:', { reactor: reactor.username, messageAuthor: messageAuthorUsername });
+        socket.emit('error', 'Cannot react to your own message');
+        return;
+      }
+
+      console.log('Processing reaction:', {
+        reactor: reactor.username,
+        messageAuthor: messageAuthorUsername,
+        reactionType,
+        messageId,
+        roomId
+      });
+
+      // Update reaction count for the reactor (no points)
+      const reactorStats = await UserStats.findOneAndUpdate(
+        { username: reactor.username },
+        { 
+          $inc: { reactionCount: 1 },
+          $set: { lastActive: new Date() }
+        },
+        { new: true }
+      );
+      console.log('Updated reactor stats:', {
+        username: reactor.username,
+        reactionCount: reactorStats?.reactionCount
+      });
+
+      // Award points to the message author
+      const authorStats = await UserStats.findOneAndUpdate(
+        { username: messageAuthorUsername },
+        { 
+          $inc: { points: 5 },  // Give 5 points to the message author
+          $set: { lastActive: new Date() }
+        },
+        { new: true }
+      );
+      console.log('Updated author stats:', {
+        username: messageAuthorUsername,
+        points: authorStats?.points
+      });
+
+      // Update in-memory stats for the message author if they're online
+      const messageAuthor = Array.from(activeUsers.values())
+        .find(user => user.username === messageAuthorUsername);
+      
+      if (messageAuthor && authorStats) {
+        messageAuthor.points = authorStats.points;
+        messageAuthor.lastActive = authorStats.lastActive;
+        console.log('Updated in-memory author stats:', {
+          username: messageAuthor.username,
+          points: messageAuthor.points
+        });
+      } else {
+        console.log('Message author not found in memory or stats update failed:', {
+          authorInMemory: !!messageAuthor,
+          authorStatsUpdated: !!authorStats
+        });
+      }
+      
+      console.log(`${reactor.username} reacted with ${reactionType} to ${messageAuthorUsername}'s message in room ${roomId || 'global'}`);
+      
+      // Create reaction data for broadcast
+    const reactionData = {
+      messageId,
+      reactionType,
+        reactorUsername: reactor.username,  // Who gave the reaction
+        messageAuthorUsername,              // Who received the reaction
+      roomId,
+        userColor: reactor.color,
+      timestamp: Date.now()
+    };
+    
+      // Broadcast the reaction
+    if (roomId && roomId !== 'global') {
+      io.in(roomId).emit('message_reaction_broadcast', reactionData);
+    } else {
+      io.emit('message_reaction_broadcast', {
+        ...reactionData,
+        roomId: 'global'
+      });
+    }
+    
+      // Send confirmation to reactor
+    socket.emit('reaction_confirmed', {
+      messageId,
+      reactionType,
+      success: true
+    });
+
+      // Find the message author's socket and emit their updated points
+      const messageAuthorSocket = Array.from(io.sockets.sockets.values())
+        .find(s => activeUsers.get(s.id)?.username === messageAuthorUsername);
+      
+      if (messageAuthorSocket) {
+        await emitUserPoints(messageAuthorSocket, messageAuthorUsername);
+      }
+
+      // Broadcast updated stats
+      await broadcastLeaderboard(io);
+      await broadcastGlobalStats(io);
+
+    } catch (error) {
+      console.error('Error handling reaction:', error);
+      socket.emit('error', 'Failed to process reaction');
+    }
+  });
+
+  // Add room admin settings handling
+  socket.on('room:update_settings', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user) {
+      socket.emit('error', 'Not registered');
+      return;
+    }
+    
+    const { roomId, settings } = data;
+    
+    if (!roomId || !settings) {
+      socket.emit('error', 'Invalid room settings data');
+      return;
+    }
+    
+    // Get room metadata
+    const roomMetadataObj = roomMetadata.get(roomId);
+    if (!roomMetadataObj) {
+      socket.emit('error', 'Room not found');
+      return;
+    }
+    
+    // Check if user is the room admin
+    if (roomMetadataObj.adminId !== socket.id) {
+      socket.emit('error', 'You are not the room admin');
+      return;
+    }
+    
+    console.log(`Admin ${user.username} updated settings for room ${roomId}:`, settings);
+    
+    // Update room metadata with new settings
+    const updatedMetadata = {
+      ...roomMetadataObj,
+      settings: {
+        ...roomMetadataObj.settings || {},
+        ...settings
+      }
+    };
+    
+    roomMetadata.set(roomId, updatedMetadata);
+    
+    // Broadcast updated settings to everyone in the room
+    io.in(roomId).emit('room:settings_updated', {
+      roomId,
+      settings: updatedMetadata.settings
+    });
+  });
+
+  // Add leaderboard request handler
+  socket.on('leaderboard:request', () => {
+    console.log('Leaderboard requested by socket:', socket.id);
+    broadcastLeaderboard(io);
+  });
+
+  // Add hack feature handler
+  socket.on('execute_hack', async ({ userId }) => {
+    console.log(`[HACK] Hack attempt from user ID: ${userId}`);
+    const hacker = activeUsers.get(socket.id);
+    
+    if (!hacker) {
+      console.log('[HACK] Hack failed: User not found');
+      socket.emit('error', 'Not registered');
+      return;
+    }
+
+    try {
+      // Check hack access
+      const hackAccess = await HackAccess.findOne({ username: hacker.username, isActive: true });
+      
+      if (!hackAccess?.isValid()) {
+        // Check for random selection (10% chance)
+        if (Math.random() < 0.1) {
+          // Grant random access for 5 minutes
+          await HackAccess.create({
+            username: hacker.username,
+            type: 'random',
+            expiresAt: new Date(Date.now() + 5 * 60000)
+          });
+          socket.emit('notification', {
+            type: 'success',
+            message: '🎲 You got lucky! Hack access granted for 5 minutes!'
+          });
+        } else {
+          socket.emit('error', 'No hack access');
+          return;
+        }
+      }
+
+      // Get all active users except the hacker
+      const potentialVictims = Array.from(activeUsers.values())
+        .filter(user => user.id !== socket.id && user.points > 0);
+
+      console.log(`[HACK] Found ${potentialVictims.length} potential victims`);
+      
+      if (potentialVictims.length < 3) {
+        socket.emit('error', 'Not enough victims available');
+        return;
+      }
+
+      // Randomly select 3 victims
+      const victims = [];
+      const selectedVictims = new Set();
+      let totalStolenPoints = 0;
+
+      while (victims.length < 3 && selectedVictims.size < potentialVictims.length) {
+        const randomIndex = Math.floor(Math.random() * potentialVictims.length);
+        const victim = potentialVictims[randomIndex];
+        
+        if (!selectedVictims.has(victim.id)) {
+          selectedVictims.add(victim.id);
+          const stolenPoints = Math.floor(victim.points * 0.1); // Steal 10% of points
+          victim.points -= stolenPoints;
+          totalStolenPoints += stolenPoints;
+          victims.push(victim);
+
+          // Notify victim
+          const victimSocket = io.sockets.sockets.get(victim.id);
+          if (victimSocket) {
+            victimSocket.emit('notification', {
+              type: 'error',
+              message: `⚠️ You've been hacked by ${hacker.username}! Lost ${stolenPoints} points!`
+            });
+          }
+        }
+      }
+
+      // Update hacker's points
+      hacker.points += totalStolenPoints;
+
+      // Broadcast system message
+      io.emit('message', {
+        id: `system-${Date.now()}`,
+        username: 'SYSTEM',
+        content: `🎯 ${hacker.username} hacked ${victims.map(v => v.username).join(', ')} and stole ${totalStolenPoints} points!`,
+        timestamp: new Date(),
+        isSystem: true
+      });
+
+      // Send success response
+      socket.emit('hack_result', {
+        success: true,
+        stolenPoints: totalStolenPoints,
+        victims: victims.map(v => v.username)
+      });
+
+      // Update leaderboard
+      broadcastLeaderboard(io);
+
+    } catch (error) {
+      console.error('[HACK] Error:', error);
+      socket.emit('error', 'Hack failed');
+    }
   });
 });
 
@@ -545,6 +1184,13 @@ if (process.env.NODE_ENV === 'production') {
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
+// Initialize database before starting the server
+const startServer = async () => {
+  try {
+    // Connect to MongoDB
+    await connectDB();
+    
+    // Start the server
 httpServer.listen(PORT, HOST, () => {
   console.log(`[${new Date().toISOString()}] Server started`);
   console.log(`[${new Date().toISOString()}] Server running on http://${HOST}:${PORT}`);
@@ -553,3 +1199,11 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
   console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
 });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+// Start the server
+startServer();

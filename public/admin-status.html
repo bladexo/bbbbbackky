@@ -342,6 +342,39 @@
             </div>
         </div>
 
+        <div class="status-panel">
+            <div class="status-header">
+                <h1>Hack Feature Management</h1>
+                <div class="ip-actions">
+                    <select id="hackAccessType" class="message-input" style="width: 150px;">
+                        <option value="free">Free for All</option>
+                        <option value="specific">Specific Users</option>
+                        <option value="random">Random Selection</option>
+                    </select>
+                    <input type="text" id="hackUsername" class="message-input" placeholder="Username (for specific access)">
+                    <input type="number" id="hackDuration" class="message-input" placeholder="Duration (minutes)" min="1" style="width: 150px;">
+                    <button id="updateHackAccessBtn" class="message-button">Update Access</button>
+                </div>
+            </div>
+            <div class="ip-list-container">
+                <table class="ip-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Access Type</th>
+                            <th>Granted At</th>
+                            <th>Expires</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="hackAccessList">
+                        <!-- Hack access list will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <div class="message-panel">
             <h2>System Message</h2>
             <input type="text" id="messageInput" class="message-input" placeholder="Type system message...">
@@ -693,6 +726,89 @@
                 }
             }
 
+            async function loadHackAccessList() {
+                try {
+                    const response = await fetch(`${SERVER_URL}/admin/hack-access`, {
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`
+                        }
+                    });
+                    
+                    if (!response.ok) throw new Error('Failed to fetch hack access list');
+                    
+                    const { data } = await response.json();
+                    const hackAccessList = document.getElementById('hackAccessList');
+                    
+                    hackAccessList.innerHTML = Object.entries(data)
+                        .map(([username, access]) => {
+                            const grantedAt = new Date(access.grantedAt);
+                            const expiresAt = new Date(access.expiresAt);
+                            const now = new Date();
+                            const isExpired = expiresAt < now;
+                            
+                            return `
+                                <tr>
+                                    <td>${username}</td>
+                                    <td>${access.type}</td>
+                                    <td>${grantedAt.toLocaleString()}</td>
+                                    <td>${access.type === 'free' ? 'Never' : expiresAt.toLocaleString()}</td>
+                                    <td class="${isExpired ? 'text-red-500' : 'text-neon-green'}">
+                                        ${isExpired ? 'Expired' : 'Active'}
+                                    </td>
+                                    <td>
+                                        <button onclick="handleHackAccess('revoke', '${username}')" 
+                                                class="message-button">
+                                            Revoke
+                                        </button>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('') || '<tr><td colspan="6">No hack access records</td></tr>';
+                } catch (error) {
+                    console.error('Error loading hack access list:', error);
+                }
+            }
+
+            async function handleHackAccess(action, username) {
+                const accessType = document.getElementById('hackAccessType').value;
+                const targetUsername = username || document.getElementById('hackUsername').value.trim();
+                const duration = document.getElementById('hackDuration').value;
+
+                if (action === 'update' && accessType === 'specific' && !targetUsername) {
+                    alert('Please enter a username');
+                    return;
+                }
+
+                if (action === 'update' && accessType !== 'free' && (!duration || duration < 1)) {
+                    alert('Please enter a valid duration in minutes');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${SERVER_URL}/admin/hack-access/${action}`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('adminPassword')}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            username: targetUsername,
+                            type: accessType,
+                            duration: parseInt(duration)
+                        })
+                    });
+
+                    if (!response.ok) throw new Error(`Failed to ${action} hack access`);
+
+                    document.getElementById('hackUsername').value = '';
+                    document.getElementById('hackDuration').value = '';
+                    loadHackAccessList();
+                } catch (error) {
+                    console.error(`Error ${action}ing hack access:`, error);
+                    alert(`Failed to ${action} hack access`);
+                }
+            }
+
             sendButton.addEventListener('click', sendSystemMessage);
             messageInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') sendSystemMessage();
@@ -702,16 +818,19 @@
             document.getElementById('unblockIpBtn').addEventListener('click', () => handleIPAction('unblock'));
             document.getElementById('blockUsernameBtn').addEventListener('click', () => handleUsernameAction('block'));
             document.getElementById('unblockUsernameBtn').addEventListener('click', () => handleUsernameAction('unblock'));
+            document.getElementById('updateHackAccessBtn').addEventListener('click', () => handleHackAccess('update'));
 
             // Initial checks
             checkHealth();
             loadIPStats();
             loadUsernameStats();
+            loadHackAccessList();
 
             // Set up periodic updates
             healthCheckInterval = setInterval(checkHealth, 5000);
             setInterval(loadIPStats, 10000);
             setInterval(loadUsernameStats, 10000);
+            setInterval(loadHackAccessList, 10000);
 
             // Clean up on page unload
             window.addEventListener('unload', () => {

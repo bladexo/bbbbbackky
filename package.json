@@ -16,6 +16,7 @@
     "express-rate-limit": "^7.5.0",
     "express-validator": "^7.2.1",
     "helmet": "^8.0.0",
+    "mongoose": "^8.0.0",
     "rate-limiter-flexible": "^6.2.0",
     "socket.io": "^4.8.1",
     "tweetnacl": "^1.0.3",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
+    "@types/mongoose": "^5.11.97",
     "@types/node": "^22.13.11",
     "rimraf": "^5.0.1",
     "ts-node": "^10.9.2",
