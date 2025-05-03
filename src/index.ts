@@ -17,6 +17,8 @@ import { connectDB } from './config/database.js';
 import { UserStats } from './models/UserStats.js';
 import HackAccess from './models/HackAccess.js';
 import GlobalStats from './models/GlobalStats.js';
+import { configureForNetlify } from './netlifyAdapter.js';
+import { configureVercelHeaders, configureSocketIOForVercel } from './middleware/vercelSocketAdapter.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
@@ -142,7 +144,6 @@ const io = new Server(httpServer, {
   pingTimeout: 30000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  maxHttpBufferSize: 1e8, // 100 MB
   allowEIO3: true // Enable Engine.IO v3 compatibility
 });
 
@@ -1181,9 +1182,24 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
+// Apply platform-specific adapters
+if (process.env.VERCEL) {
+  // Apply Vercel-specific middleware
+  app.use(configureVercelHeaders);
+  
+  // Configure Socket.IO for Vercel after initialization
+  configureSocketIOForVercel(io, httpServer);
+  
+  console.log('Configured for Vercel deployment');
+} else if (process.env.NETLIFY || process.env.NETLIFY_DEV) {
+  // Apply Netlify-specific configuration
+  configureForNetlify(app);
+  console.log('Configured for Netlify deployment');
+}
+
 // Update port configuration for deployment
-const PORT = parseInt(process.env.PORT || '8000', 10);
-const HOST = process.env.HOST || '0.0.0.0';
+const PORT = parseInt(process.env.PORT || '3000', 10);
+const HOST = '0.0.0.0';
 
 // Initialize database before starting the server
 const startServer = async () => {
@@ -1191,20 +1207,25 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDB();
     
-    // Start the server
-httpServer.listen(PORT, HOST, () => {
-  console.log(`[${new Date().toISOString()}] Server started`);
-  console.log(`[${new Date().toISOString()}] Server running on http://${HOST}:${PORT}`);
-  console.log(`[${new Date().toISOString()}] Status page available at http://${HOST}:${PORT}/status`);
-  console.log(`[${new Date().toISOString()}] Admin panel available at http://${HOST}:${PORT}/admin`);
-  console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
-  console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
-});
+    // Start the server (skip in Netlify environment as the function will handle it)
+    if (!process.env.NETLIFY && !process.env.NETLIFY_DEV) {
+      httpServer.listen(PORT, HOST, () => {
+        console.log(`[${new Date().toISOString()}] Server started`);
+        console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
+        console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
+        console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
+      });
+    } else {
+      console.log(`[${new Date().toISOString()}] Server configured for Netlify Functions`);
+    }
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 };
 
-// Start the server
+// Start the server if not in Netlify environment
 startServer();
+
+// Export for both Vercel and Netlify
+export { app, httpServer, io };
