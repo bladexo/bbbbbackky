@@ -1235,5 +1235,9 @@ const startServer = async () => {
 // Start the server if not in Netlify environment
 startServer();
 
-// Export for both Vercel and Netlify
+// Export for serverless environments
+// For Vercel, export the app as default
+export default app;
+
+// These exports are for Netlify and other environments
 export { app, httpServer, io };

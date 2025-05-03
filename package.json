@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "vercel-build": "tsc",
+    "netlify-build": "tsc && cp -r ./netlify/functions ./dist/netlify/",
     "start": "node dist/index.js",
     "clean": "rimraf dist",
     "netlify:dev": "netlify dev"

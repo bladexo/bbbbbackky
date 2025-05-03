@@ -2,10 +2,18 @@
   command = "npm run build"
   publish = "dist"
   functions = "netlify/functions"
+  node_bundler = "esbuild"
 
 [dev]
+  command = "npm run dev"
   port = 8000
+  targetPort = 8000
   publish = "dist"
+  autoLaunch = true
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["express", "socket.io"]
 
 [[redirects]]
   from = "/socket.io/*"
@@ -37,6 +45,6 @@
   status = 200
   force = true
 
-[functions]
-  node_bundler = "esbuild"
-  external_node_modules = ["express", "socket.io"] 
+[build.environment]
+  NODE_VERSION = "18"
+  NPM_VERSION = "9" 
