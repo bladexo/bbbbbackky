@@ -18,7 +18,7 @@ import { UserStats } from './models/UserStats.js';
 import HackAccess from './models/HackAccess.js';
 import GlobalStats from './models/GlobalStats.js';
 import { configureForNetlify } from './netlifyAdapter.js';
-import { configureVercelHeaders, configureSocketIOForVercel } from './middleware/vercelSocketAdapter.js';
+import { configureVercelHeaders, configureSocketIOForVercel, handleVercelWebSocket } from './middleware/vercelSocketAdapter.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
@@ -144,12 +144,17 @@ const io = new Server(httpServer, {
   pingTimeout: 30000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  allowEIO3: true // Enable Engine.IO v3 compatibility
+  allowEIO3: true, // Enable Engine.IO v3 compatibility
+  maxHttpBufferSize: 1e6, // 1MB
+  // Vercel-specific options
+  cookie: false, // Don't use cookies on Vercel
+  serveClient: false // Don't serve client files
 });
 
 // Add connection error handling
 io.engine.on("connection_error", (err) => {
   console.log('Connection error:', err);
+  console.log('Connection error details:', JSON.stringify(err, null, 2));
 });
 
 // Make io available to routes
@@ -1187,10 +1192,13 @@ if (process.env.VERCEL) {
   // Apply Vercel-specific middleware
   app.use(configureVercelHeaders);
   
+  // Handle WebSocket upgrades
+  handleVercelWebSocket(httpServer);
+  
   // Configure Socket.IO for Vercel after initialization
   configureSocketIOForVercel(io, httpServer);
   
-  console.log('Configured for Vercel deployment');
+  console.log('Configured for Vercel deployment with WebSocket handling');
 } else if (process.env.NETLIFY || process.env.NETLIFY_DEV) {
   // Apply Netlify-specific configuration
   configureForNetlify(app);
