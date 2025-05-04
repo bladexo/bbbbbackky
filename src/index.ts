@@ -42,7 +42,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', 'https://bbbbbackky.vercel.app']
+  ? ['https://dworldchat.vercel.app', 'https://nutty-annabell-loganrustyy-25293412.koyeb.app']
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
