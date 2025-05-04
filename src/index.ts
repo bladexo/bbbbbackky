@@ -40,7 +40,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', `https://nutty-annabell-loganrustyy-25293412.koyeb.app`]
+  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
@@ -1249,7 +1249,7 @@ if (process.env.NODE_ENV === 'production') {
         }
       }));
       
-      app.get('*', (_req, res) => {
+      app.get('*catchAll', (_req, res) => {
         const indexPath = join(altPath, 'index.html');
         console.log('Serving index.html from:', indexPath);
         if (fs.existsSync(indexPath)) {
@@ -1262,7 +1262,7 @@ if (process.env.NODE_ENV === 'production') {
   } else {
     console.log('dist directory found at:', distPath);
     
-    app.get('*', (_req, res) => {
+    app.get('*catchAll', (_req, res) => {
       const indexPath = join(distPath, 'index.html');
       console.log('Serving index.html from:', indexPath);
       if (fs.existsSync(indexPath)) {
