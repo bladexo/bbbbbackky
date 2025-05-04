@@ -17,8 +17,6 @@ import { connectDB } from './config/database.js';
 import { UserStats } from './models/UserStats.js';
 import HackAccess from './models/HackAccess.js';
 import GlobalStats from './models/GlobalStats.js';
-import { configureForNetlify } from './netlifyAdapter.js';
-import { configureVercelHeaders, configureSocketIOForVercel, handleVercelWebSocket } from './middleware/vercelSocketAdapter.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
@@ -42,7 +40,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', 'https://nutty-annabell-loganrustyy-25293412.koyeb.app']
+  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
@@ -138,27 +136,54 @@ const io = new Server(httpServer, {
   },
   path: '/socket.io/',
   connectionStateRecovery: {
-    maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
-    skipMiddlewares: true,
+    maxDisconnectionDuration: 5 * 60 * 1000, // 5 minutes (increased from 2)
+    skipMiddlewares: false, // Don't skip middleware (changed from true)
   },
-  pingTimeout: 30000,
+  pingTimeout: 60000, // Increase from 30000 to 60000
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  allowEIO3: true, // Enable Engine.IO v3 compatibility
-  maxHttpBufferSize: 1e6, // 1MB
-  // Vercel-specific options
-  cookie: false, // Don't use cookies on Vercel
-  serveClient: false // Don't serve client files
+  maxHttpBufferSize: 1e8, // 100 MB
+  // Add cookie settings for better session persistence
+  cookie: {
+    name: "dworldchat_io",
+    httpOnly: true,
+    maxAge: 86400000 // 24 hours
+  }
 });
 
 // Add connection error handling
 io.engine.on("connection_error", (err) => {
   console.log('Connection error:', err);
-  console.log('Connection error details:', JSON.stringify(err, null, 2));
 });
 
 // Make io available to routes
 app.set('io', io);
+
+// Session persistence validation middleware
+io.use((socket, next) => {
+  const clientId = socket.handshake.auth.clientId;
+  const username = socket.handshake.auth.username;
+  
+  console.log(`Connection attempt from clientId: ${clientId}, username: ${username}`);
+  
+  if (username && clientId) {
+    // Check if this is a reconnection attempt
+    const disconnectedUser = disconnectedUsers.get(username.toLowerCase());
+    if (disconnectedUser) {
+      console.log(`Found disconnected user session for ${username}`);
+      
+      // Attach user data to socket for later use
+      (socket as any).reconnectData = {
+        username,
+        clientId,
+        previousSocketId: disconnectedUser.user.id,
+        isReconnect: true
+      };
+    }
+  }
+  
+  next();
+});
 
 // Simple user tracking with extended stats
 interface UserWithStats {
@@ -172,6 +197,10 @@ interface UserWithStats {
 }
 
 const activeUsers = new Map<string, UserWithStats>();
+// Add username to socket ID mapping for reconnection
+const usernameToSocketId = new Map<string, string>();
+// Track disconnected users for reconnection
+const disconnectedUsers = new Map<string, {user: UserWithStats, disconnectedAt: Date}>();
 
 // Room metadata storage - maps room IDs and codes to their metadata
 const roomMetadata = new Map();
@@ -257,9 +286,42 @@ const emitUserPoints = async (socket: Socket, username: string) => {
   }
 };
 
-// Enhanced connection handling
+// Handle connection
 io.on('connection', async (socket) => {
   console.log(`[${new Date().toISOString()}] Client connected: ${socket.id}`);
+  
+  // Check if this is a reconnection with cached data
+  const reconnectData = (socket as any).reconnectData;
+  if (reconnectData && reconnectData.isReconnect) {
+    console.log(`Processing reconnection for user ${reconnectData.username}`);
+    const disconnectedUser = disconnectedUsers.get(reconnectData.username.toLowerCase());
+    
+    if (disconnectedUser) {
+      // Restore user session
+      const user = disconnectedUser.user;
+      
+      // Update socket ID
+      user.id = socket.id;
+      user.lastActive = new Date();
+      
+      // Update tracking
+      activeUsers.set(socket.id, user);
+      usernameToSocketId.set(user.username.toLowerCase(), socket.id);
+      disconnectedUsers.delete(user.username.toLowerCase());
+      
+      // Emit session restored event
+      socket.emit('session_restored', {
+        username: user.username,
+        color: user.color,
+        points: user.points
+      });
+      
+      console.log(`Session restored for ${user.username}`);
+      
+      // Update online user count
+      io.emit('online_count', { count: activeUsers.size });
+    }
+  }
   
   // Set up ping/pong for connection monitoring
   let lastPing = Date.now();
@@ -297,60 +359,57 @@ io.on('connection', async (socket) => {
     const user = activeUsers.get(socket.id);
     if (user) {
       try {
-        // Keep the user in memory for a short time to allow for reconnection
+        // Store user in disconnected users map
+        disconnectedUsers.set(user.username.toLowerCase(), {
+          user,
+          disconnectedAt: new Date()
+        });
+        
+        console.log(`User ${user.username} moved to disconnected state. Will be removed in 5 minutes if not reconnected.`);
+        
+        // Keep the user in memory for a longer time to allow for reconnection
         setTimeout(async () => {
           // Only clean up if the user hasn't reconnected
-          if (activeUsers.get(socket.id)?.username === user.username) {
+          const disconnectedUser = disconnectedUsers.get(user.username.toLowerCase());
+          if (disconnectedUser && disconnectedUser.user.id === socket.id) {
             // Update last active time in MongoDB
             await UserStats.findOneAndUpdate(
               { username: user.username },
               { $set: { lastActive: new Date() } }
             );
 
-            // Clean up user from active users
+            // Remove from tracking maps
             activeUsers.delete(socket.id);
+            usernameToSocketId.delete(user.username.toLowerCase());
+            disconnectedUsers.delete(user.username.toLowerCase());
             
-            // Also clean up any other sockets that might have the same username
-            for (const [socketId, activeUser] of activeUsers.entries()) {
-              if (activeUser.username === user.username) {
-                activeUsers.delete(socketId);
-              }
-            }
-
             // Update global user count
             await GlobalStats.updateUserCount(activeUsers.size);
 
-            console.log(`User disconnected: ${user.username} (${socket.id})`);
+            console.log(`User fully disconnected: ${user.username} (${socket.id})`);
             console.log('Active users:', activeUsers.size);
 
             io.emit('user_left', {
-              id: socket.id,
               username: user.username,
-              onlineCount: activeUsers.size,
-              reason: reason
+              onlineCount: activeUsers.size
             });
-
-            // Broadcast online count separately to ensure it's received
             io.emit('online_count', { count: activeUsers.size });
-            await broadcastLeaderboard(io);
-            await broadcastGlobalStats(io);
           }
-        }, 5000); // Wait 5 seconds before cleanup to allow for quick reconnects
-
+        }, 5 * 60 * 1000); // 5 minutes (increased from implied 0)
       } catch (error) {
-        console.error('Error handling disconnect:', error);
+        console.error('Error handling disconnection:', error);
       }
     }
   });
 
-  // Handle reconnection attempts
-  socket.on('reconnect_attempt', () => {
-    console.log(`Client ${socket.id} attempting to reconnect`);
+  // Add a reconnect handler to help with session recovery
+  socket.on('reconnect_attempt', (attemptNumber) => {
+    console.log(`Client ${socket.id} reconnection attempt #${attemptNumber}`);
   });
 
-  // Handle successful reconnection
   socket.on('reconnect', () => {
-    console.log(`Client ${socket.id} successfully reconnected`);
+    console.log(`Client ${socket.id} reconnected successfully`);
+    // Client will re-register with the same username
   });
 
   // Handle failed reconnection
@@ -372,26 +431,53 @@ io.on('connection', async (socket) => {
       return;
     }
 
-    // Check for existing username
-    const usernameTaken = Array.from(activeUsers.values())
-      .some(user => user.username.toLowerCase() === username.toLowerCase());
-    if (usernameTaken) {
+    // Check for existing active user with the same username
+    const existingSocketId = usernameToSocketId.get(username.toLowerCase());
+    const userActive = existingSocketId && activeUsers.has(existingSocketId);
+    
+    // Check if we have this user in disconnected state
+    const disconnectedUser = disconnectedUsers.get(username.toLowerCase());
+    
+    if (userActive) {
+      // User is still active in another socket
+      console.log(`Username ${username} is already active with socket ID ${existingSocketId}`);
       socket.emit('error', 'Username already taken');
       return;
     }
-
+    
     try {
-      // First register user in memory
-      const newUser: UserWithStats = {
-        id: socket.id,
-        username,
-        color,
-        messageCount: 0,
-        reactionCount: 0,
-        points: 0,
-        lastActive: new Date()
-      };
+      let newUser: UserWithStats;
+      
+      // Check if this is a reconnection
+      if (disconnectedUser) {
+        console.log(`Reconnecting previously disconnected user: ${username}`);
+        
+        // Update the user with the new socket ID
+        newUser = {
+          ...disconnectedUser.user,
+          id: socket.id,
+          lastActive: new Date()
+        };
+        
+        // Clean up disconnected user entry
+        disconnectedUsers.delete(username.toLowerCase());
+      } else {
+        // This is a new user
+        newUser = {
+          id: socket.id,
+          username,
+          color,
+          messageCount: 0,
+          reactionCount: 0,
+          points: 0,
+          lastActive: new Date()
+        };
+      }
+      
+      // Add user to active users and update mappings
       activeUsers.set(socket.id, newUser);
+      usernameToSocketId.set(username.toLowerCase(), socket.id);
+      
       console.log(`User registered in memory: ${username} (${socket.id})`);
       console.log('Active users count:', activeUsers.size);
 
@@ -415,7 +501,7 @@ io.on('connection', async (socket) => {
       await GlobalStats.updateUserCount(activeUsers.size);
       
       console.log('User added/updated in MongoDB:', result);
-
+    
       // Emit events
       io.emit('user_joined', {
         id: socket.id,
@@ -424,7 +510,7 @@ io.on('connection', async (socket) => {
       });
 
       // Broadcast online count separately to ensure it's received
-    io.emit('online_count', { count: activeUsers.size });
+      io.emit('online_count', { count: activeUsers.size });
 
       // Broadcast updated stats
       await broadcastLeaderboard(io);
@@ -433,6 +519,7 @@ io.on('connection', async (socket) => {
     } catch (error) {
       console.error('Error registering user:', error);
       activeUsers.delete(socket.id);
+      usernameToSocketId.delete(username.toLowerCase());
       socket.emit('error', 'Failed to register user');
     }
   });
@@ -453,7 +540,7 @@ io.on('connection', async (socket) => {
     if (!data.content || data.content.length > 1000) {
       socket.emit('error', 'Invalid message length');
         return;
-    }
+      }
 
     try {
       // Update message stats in MongoDB
@@ -481,7 +568,7 @@ io.on('connection', async (socket) => {
 
         // Emit updated points to the user
         await emitUserPoints(socket, user.username);
-      }
+    }
 
       // Broadcast message with replyTo data
       io.emit('chat_message', {
@@ -503,7 +590,7 @@ io.on('connection', async (socket) => {
     } catch (error) {
       console.error('Error handling message:', error);
       socket.emit('error', 'Failed to process message');
-    }
+      }
   });
 
   // Handle room messages
@@ -781,7 +868,7 @@ io.on('connection', async (socket) => {
         username: messageAuthorUsername,
         points: authorStats?.points
       });
-
+    
       // Update in-memory stats for the message author if they're online
       const messageAuthor = Array.from(activeUsers.values())
         .find(user => user.username === messageAuthorUsername);
@@ -1187,24 +1274,6 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
-// Apply platform-specific adapters
-if (process.env.VERCEL) {
-  // Apply Vercel-specific middleware
-  app.use(configureVercelHeaders);
-  
-  // Handle WebSocket upgrades
-  handleVercelWebSocket(httpServer);
-  
-  // Configure Socket.IO for Vercel after initialization
-  configureSocketIOForVercel(io, httpServer);
-  
-  console.log('Configured for Vercel deployment with WebSocket handling');
-} else if (process.env.NETLIFY || process.env.NETLIFY_DEV) {
-  // Apply Netlify-specific configuration
-  configureForNetlify(app);
-  console.log('Configured for Netlify deployment');
-}
-
 // Update port configuration for deployment
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
@@ -1215,29 +1284,20 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDB();
     
-    // Start the server (skip in Netlify environment as the function will handle it)
-    if (!process.env.NETLIFY && !process.env.NETLIFY_DEV) {
-      httpServer.listen(PORT, HOST, () => {
-        console.log(`[${new Date().toISOString()}] Server started`);
-        console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
-        console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
-        console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
-      });
-    } else {
-      console.log(`[${new Date().toISOString()}] Server configured for Netlify Functions`);
-    }
+    // Start the server
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[${new Date().toISOString()}] Server started`);
+      console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
+  console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
+  console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
+});
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 };
 
-// Start the server if not in Netlify environment
 startServer();
 
-// Export for serverless environments
-// For Vercel, export the app as default
+// Export the app for Vercel
 export default app;
-
-// These exports are for Netlify and other environments
-export { app, httpServer, io };

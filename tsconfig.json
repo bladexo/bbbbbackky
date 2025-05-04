@@ -7,19 +7,9 @@
     "strict": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "resolveJsonModule": true,
-    "sourceMap": true,
-    "declaration": true,
-    "allowJs": true,
-    "removeComments": false,
-    "noImplicitAny": true,
-    "noImplicitThis": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "lib": ["ES2020"]
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "netlify", "**/*.test.ts"]
+  "exclude": ["node_modules"]
 }

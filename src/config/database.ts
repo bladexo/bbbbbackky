@@ -138,7 +138,6 @@ export const connectDB = async () => {
 
     // Log final connection status
     logConnectionStatus();
-    return true;
 
   } catch (error: unknown) {
     console.error('\n❌ MongoDB connection error:');
@@ -150,15 +149,7 @@ export const connectDB = async () => {
       });
     }
     logConnectionStatus();
-    
-    // On Vercel, we don't want to exit the process on connection error
-    if (process.env.VERCEL) {
-      console.log('Running on Vercel - continuing without DB connection');
-      return false;
-    } else {
-      // In development or other environments, we may want to exit
-      process.exit(1);
-    }
+    process.exit(1);
   }
 };
 
