@@ -76,6 +76,9 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
               duration: 3000
             });
             
+            // Send registration confirmation
+            socket.emit('registration_confirmed');
+            
             // Emit updated points to the user
             await emitUserPoints(socket, updatedUser.username);
             
@@ -139,6 +142,9 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
         message: `Welcome to the chat, ${username}!`,
         duration: 3000
       });
+      
+      // Send registration confirmation
+      socket.emit('registration_confirmed');
       
       // Emit events
       io.emit('user_joined', {
@@ -301,5 +307,28 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
         console.error('Error handling disconnect:', error);
       }
     }
+  });
+
+  // Add handler to check registration status
+  socket.on('check_registration', ({ username }, callback) => {
+    console.log(`Checking registration for username: ${username}`);
+    
+    // Check if this socket is registered
+    const isSocketRegistered = activeUsers.has(socket.id);
+    
+    // Check if the username exists in any active user
+    const usernameExists = Array.from(activeUsers.values())
+      .some(user => user.username === username);
+    
+    // Check if this socket's username matches the requested username
+    const currentUser = activeUsers.get(socket.id);
+    const isCorrectUser = currentUser && currentUser.username === username;
+    
+    console.log(`Registration check: socket registered: ${isSocketRegistered}, username exists: ${usernameExists}, is correct user: ${isCorrectUser}`);
+    
+    // Only consider registered if this socket has the correct username
+    const registered = isSocketRegistered && isCorrectUser;
+    
+    callback({ registered });
   });
 }
