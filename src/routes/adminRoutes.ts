@@ -60,6 +60,14 @@ class UsernameBlockController {
 
 export const usernameController = new UsernameBlockController();
 
+// Store socket.io instance
+let io: any = null;
+
+// Function to set socket.io instance
+export const setSocketIO = (socketIO: any) => {
+  io = socketIO;
+};
+
 // Get all IP stats
 router.get('/ips', adminAuthMiddleware, (req, res) => {
   const stats = ipController.getIPStats();
@@ -99,7 +107,6 @@ router.post('/usernames/block/:username', adminAuthMiddleware, (req, res) => {
   const blockInfo = usernameController.getBlockedUsers()[username.toLowerCase()];
   
   // Emit mute event and system message to all connected clients
-  const io = req.app.get('io');
   if (io) {
     // Emit mute event
     io.emit('user_muted', {
@@ -132,7 +139,6 @@ router.post('/usernames/unblock/:username', adminAuthMiddleware, (req, res) => {
   usernameController.unblockUsername(username);
   
   // Emit unmute event and system message to all connected clients
-  const io = req.app.get('io');
   if (io) {
     // Emit unmute event
     io.emit('user_unmuted', {
@@ -207,7 +213,8 @@ router.post('/ips/unblock/:ip', adminAuthMiddleware, (req, res) => {
 interface AccessData {
   type: string;
   grantedAt: Date;
-  expiresAt: Date | null;
+  usageCount: number;
+  maxUsages: number | null;
   isActive: boolean;
 }
 
@@ -218,7 +225,7 @@ interface FormattedList {
 interface HackAccessBody {
   username?: string;
   type: 'free' | 'specific' | 'random';
-  duration?: number;
+  maxUsages?: number;
 }
 
 // Get hack access list
@@ -230,7 +237,8 @@ router.get('/hack-access', adminAuthMiddleware, async (req: Request, res: Respon
       acc[access.username] = {
         type: access.type,
         grantedAt: access.grantedAt,
-        expiresAt: access.expiresAt,
+        usageCount: access.usageCount,
+        maxUsages: access.maxUsages,
         isActive: access.isActive
       };
       return acc;
@@ -244,51 +252,92 @@ router.get('/hack-access', adminAuthMiddleware, async (req: Request, res: Respon
 });
 
 // Update hack access
-router.post('/hack-access/update', adminAuthMiddleware, async (req: Request<{}, {}, HackAccessBody>, res: Response): Promise<void> => {
+router.post('/hack-access/update', adminAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
   try {
-    const { username, type, duration } = req.body;
+    const { username, type, maxUsages } = req.body;
     
     if (type === 'specific' && !username) {
       res.status(400).json({ success: false, error: 'Username required for specific access' });
       return;
     }
 
-    // Handle free access type separately since it doesn't need duration
+    // Handle free access type separately since it doesn't need maxUsages
     if (type === 'free') {
-      await HackAccess.findOneAndUpdate(
+      const hackAccess = await HackAccess.findOneAndUpdate(
         { username },
         {
           type,
           grantedAt: new Date(),
-          expiresAt: null,
+          maxUsages: null,
+          usageCount: 0,
           isActive: true
         },
-        { upsert: true }
+        { upsert: true, new: true }
       );
+
+      // Emit hack access update to the user
+      if (io) {
+        const sockets = await io.fetchSockets();
+        const userSocket = sockets.find((socket: any) => {
+          const user = socket.data.user;
+          return user && user.username === username;
+        });
+
+        if (userSocket) {
+          userSocket.emit('hack_access_update', {
+            hasAccess: true,
+            accessInfo: {
+              type: hackAccess.type,
+              usageCount: hackAccess.usageCount,
+              maxUsages: hackAccess.maxUsages
+            }
+          });
+        }
+      }
+
       res.json({ success: true });
       return;
     }
 
-    // For non-free types, duration is required and must be a number
-    const durationMinutes = Number(duration);
-    if (isNaN(durationMinutes) || durationMinutes < 1) {
-      res.status(400).json({ success: false, error: 'Valid duration required' });
+    // For non-free types, maxUsages is required and must be a number
+    const maxUsagesCount = Number(maxUsages);
+    if (isNaN(maxUsagesCount) || maxUsagesCount < 1) {
+      res.status(400).json({ success: false, error: 'Valid maxUsages required' });
       return;
     }
 
-    // At this point, TypeScript knows durationMinutes is a valid number
-    const expiresAt = new Date(Date.now() + durationMinutes * 60000);
-
-    await HackAccess.findOneAndUpdate(
+    // Update or create the hack access
+    const hackAccess = await HackAccess.findOneAndUpdate(
       { username },
       {
         type,
         grantedAt: new Date(),
-        expiresAt,
+        maxUsages: maxUsagesCount,
+        usageCount: 0,
         isActive: true
       },
-      { upsert: true }
+      { upsert: true, new: true }
     );
+
+    // Emit hack access update to the user
+    if (io) {
+      const sockets = await io.fetchSockets();
+      const userSocket = sockets.find((socket: any) => {
+        const user = socket.data.user;
+        return user && user.username === username;
+      });
+
+      if (userSocket) {
+        userSocket.emit('hack_access_update', {
+          hasAccess: true,
+          accessInfo: {
+            type: hackAccess.type,
+            usageCount: hackAccess.usageCount,
+            maxUsages: hackAccess.maxUsages
+          }
+        });
+      }
+    }
 
     res.json({ success: true });
   } catch (error) {

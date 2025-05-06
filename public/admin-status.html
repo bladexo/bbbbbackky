@@ -345,15 +345,33 @@
         <div class="status-panel">
             <div class="status-header">
                 <h1>Hack Feature Management</h1>
-                <div class="ip-actions">
-                    <select id="hackAccessType" class="message-input" style="width: 150px;">
+                <div class="ip-actions" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                    <div style="min-width: 150px;">
+                        <label for="hackAccessType" style="display: block; font-size: 0.8em; margin-bottom: 4px;">Access Type</label>
+                        <select id="hackAccessType" class="message-input" style="width: 100%;">
                         <option value="free">Free for All</option>
                         <option value="specific">Specific Users</option>
                         <option value="random">Random Selection</option>
                     </select>
-                    <input type="text" id="hackUsername" class="message-input" placeholder="Username (for specific access)">
-                    <input type="number" id="hackDuration" class="message-input" placeholder="Duration (minutes)" min="1" style="width: 150px;">
+                    </div>
+                    <div style="min-width: 200px;">
+                        <label for="hackUsername" style="display: block; font-size: 0.8em; margin-bottom: 4px;">Target Username</label>
+                        <input type="text" id="hackUsername" class="message-input" placeholder="Required for Specific Users" style="width: 100%;">
+                    </div>
+                    <div style="min-width: 150px;">
+                        <label for="hackMaxUsages" style="display: block; font-size: 0.8em; margin-bottom: 4px;">Max Usages</label>
+                        <input type="number" id="hackMaxUsages" class="message-input" placeholder="Not needed for Free" min="1" style="width: 100%;">
+                    </div>
+                    <div style="align-self: flex-end; margin-bottom: 1px;">
                     <button id="updateHackAccessBtn" class="message-button">Update Access</button>
+                    </div>
+                </div>
+                <div style="margin-top: 8px; font-size: 0.8em; color: rgba(57, 255, 20, 0.7);">
+                    <ul style="margin: 0; padding-left: 20px;">
+                        <li><strong>Free for All:</strong> Username and Max Usages not required - grants unlimited access</li>
+                        <li><strong>Specific Users:</strong> Username required - grants access to a specific user for limited uses</li>
+                        <li><strong>Random Selection:</strong> Max Usages required - grants access to randomly selected users for limited uses</li>
+                    </ul>
                 </div>
             </div>
             <div class="ip-list-container">
@@ -363,7 +381,8 @@
                             <th>Username</th>
                             <th>Access Type</th>
                             <th>Granted At</th>
-                            <th>Expires</th>
+                            <th>Usage Count</th>
+                            <th>Max Usages</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
@@ -742,28 +761,25 @@
                     hackAccessList.innerHTML = Object.entries(data)
                         .map(([username, access]) => {
                             const grantedAt = new Date(access.grantedAt);
-                            const expiresAt = new Date(access.expiresAt);
                             const now = new Date();
-                            const isExpired = expiresAt < now;
+                            const isValid = access.type === 'free' || 
+                                (access.maxUsages === null || access.usageCount < access.maxUsages);
                             
                             return `
                                 <tr>
                                     <td>${username}</td>
                                     <td>${access.type}</td>
                                     <td>${grantedAt.toLocaleString()}</td>
-                                    <td>${access.type === 'free' ? 'Never' : expiresAt.toLocaleString()}</td>
-                                    <td class="${isExpired ? 'text-red-500' : 'text-neon-green'}">
-                                        ${isExpired ? 'Expired' : 'Active'}
-                                    </td>
+                                    <td>${access.usageCount}</td>
+                                    <td>${access.maxUsages === null ? 'Unlimited' : access.maxUsages}</td>
+                                    <td>${isValid ? '<span class="active">Active</span>' : '<span class="inactive">Used Up</span>'}</td>
                                     <td>
-                                        <button onclick="handleHackAccess('revoke', '${username}')" 
-                                                class="message-button">
-                                            Revoke
-                                        </button>
+                                        <button class="small-button" onclick="handleHackAccess('revoke', '${username}')">Revoke</button>
                                     </td>
                                 </tr>
                             `;
-                        }).join('') || '<tr><td colspan="6">No hack access records</td></tr>';
+                        })
+                        .join('') || '<tr><td colspan="7">No hack access entries found</td></tr>';
                 } catch (error) {
                     console.error('Error loading hack access list:', error);
                 }
@@ -772,16 +788,21 @@
             async function handleHackAccess(action, username) {
                 const accessType = document.getElementById('hackAccessType').value;
                 const targetUsername = username || document.getElementById('hackUsername').value.trim();
-                const duration = document.getElementById('hackDuration').value;
+                const maxUsages = document.getElementById('hackMaxUsages').value;
 
-                if (action === 'update' && accessType === 'specific' && !targetUsername) {
-                    alert('Please enter a username');
+                if (action === 'update') {
+                    // Validate input based on access type
+                    if (accessType === 'specific' && !targetUsername) {
+                        alert('Please enter a username for specific user targeting');
                     return;
                 }
 
-                if (action === 'update' && accessType !== 'free' && (!duration || duration < 1)) {
-                    alert('Please enter a valid duration in minutes');
+                    if (accessType !== 'free' && (!maxUsages || maxUsages < 1)) {
+                        alert('Please enter a valid number of maximum usages');
                     return;
+                    }
+                    
+                    console.log(`Updating hack access: type=${accessType}, username=${targetUsername}, maxUsages=${maxUsages}`);
                 }
 
                 try {
@@ -794,14 +815,28 @@
                         body: JSON.stringify({
                             username: targetUsername,
                             type: accessType,
-                            duration: parseInt(duration)
+                            maxUsages: parseInt(maxUsages)
                         })
                     });
 
                     if (!response.ok) throw new Error(`Failed to ${action} hack access`);
 
                     document.getElementById('hackUsername').value = '';
-                    document.getElementById('hackDuration').value = '';
+                    document.getElementById('hackMaxUsages').value = '';
+                    
+                    // Show success message
+                    if (action === 'update') {
+                        if (accessType === 'specific') {
+                            alert(`Hack access granted to ${targetUsername} for ${maxUsages} uses`);
+                        } else if (accessType === 'random') {
+                            alert(`Random hack access updated with ${maxUsages} max uses`);
+                        } else {
+                            alert('Free hack access granted');
+                        }
+                    } else if (action === 'revoke') {
+                        alert(`Hack access revoked for ${targetUsername}`);
+                    }
+                    
                     loadHackAccessList();
                 } catch (error) {
                     console.error(`Error ${action}ing hack access:`, error);
