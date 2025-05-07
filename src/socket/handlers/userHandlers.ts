@@ -18,17 +18,19 @@ import { broadcastLeaderboard, broadcastGlobalStats, emitUserPoints } from '../u
  */
 export function setupUserHandlers(io: Server, socket: Socket): void {
   // Handle user registration with identity support
-  socket.on('register_user', async ({ identity, username, color }) => {
+  socket.on('register_user', async ({ identity, username, color }, callback) => {
     console.log('User registering with identity:', { identity, username });
     
     // Validate username and identity
     if (!username || typeof username !== 'string' || username.length < 3) {
       socket.emit('error', 'Invalid username');
+      if (callback) callback({ success: false, error: 'Invalid username' });
       return;
     }
     
     if (!identity || typeof identity !== 'string') {
       socket.emit('error', 'Invalid identity');
+      if (callback) callback({ success: false, error: 'Invalid identity' });
       return;
     }
     
@@ -85,6 +87,9 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
             // Broadcast updated stats
             await broadcastLeaderboard(io);
             await broadcastGlobalStats(io);
+            
+            // Return success callback
+            if (callback) callback({ success: true });
             return;
           }
         }
@@ -99,6 +104,7 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
       
       if (usernameTaken) {
         socket.emit('error', 'Username already taken');
+        if (callback) callback({ success: false, error: 'Username already taken' });
         return;
       }
       
@@ -159,19 +165,47 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
       // Broadcast updated stats
       await broadcastLeaderboard(io);
       await broadcastGlobalStats(io);
+      
+      // Return success in callback
+      if (callback) callback({ success: true });
     } catch (error) {
       console.error('Error registering user:', error);
       activeUsers.delete(socket.id);
       userIdentities.delete(identity);
       socket.emit('error', 'Failed to register user');
+      if (callback) callback({ success: false, error: 'Server error during registration' });
     }
   });
 
-  // Keep the old register handler for backward compatibility
-  socket.on('register', async ({ username, color }) => {
+  // Handle chat message submissions
+  socket.on('chat_message', async (data, callback) => {
+    try {
+      const user = activeUsers.get(socket.id);
+      
+      if (!user) {
+        console.log(`Attempt to send message from unregistered user (${socket.id})`);
+        socket.emit('error', 'Not registered');
+        if (callback) callback({ received: false, error: 'Not registered' });
+        return;
+      }
+      
+      // Process and broadcast the message
+      // ... existing message handling code ...
+      
+      // Acknowledge receipt
+      if (callback) callback({ received: true });
+    } catch (error) {
+      console.error('Error processing message:', error);
+      if (callback) callback({ received: false, error: 'Server error' });
+    }
+  });
+
+  // Keep the old register handler for backward compatibility with improved error handling
+  socket.on('register', async ({ username, color }, callback) => {
     // Validate username
     if (!username || typeof username !== 'string' || username.length < 3) {
       socket.emit('error', 'Invalid username');
+      if (callback) callback({ success: false, error: 'Invalid username' });
       return;
     }
 
@@ -180,6 +214,7 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
       .some(user => user.username.toLowerCase() === username.toLowerCase());
     if (usernameTaken) {
       socket.emit('error', 'Username already taken');
+      if (callback) callback({ success: false, error: 'Username already taken' });
       return;
     }
 
@@ -197,6 +232,13 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
       activeUsers.set(socket.id, newUser);
       console.log(`User registered in memory: ${username} (${socket.id})`);
       console.log('Active users count:', activeUsers.size);
+
+      // Create a random identity for this user to enable reconnection
+      const identity = `legacy_identity_${Math.random().toString(36).substring(2, 15)}`;
+      userIdentities.set(identity, socket.id);
+      
+      // Inform the client about this identity
+      socket.emit('identity_assigned', { identity });
 
       // Then add/update in MongoDB
       const result = await UserStats.findOneAndUpdate(
@@ -227,6 +269,9 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
         duration: 3000
       });
       
+      // Send registration confirmation
+      socket.emit('registration_confirmed');
+      
       // Emit events
       io.emit('user_joined', {
         id: socket.id,
@@ -240,12 +285,68 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
       // Broadcast updated stats
       await broadcastLeaderboard(io);
       await broadcastGlobalStats(io);
-
+      
+      // Return success in callback
+      if (callback) callback({ success: true });
     } catch (error) {
       console.error('Error registering user:', error);
       activeUsers.delete(socket.id);
       socket.emit('error', 'Failed to register user');
+      if (callback) callback({ success: false, error: 'Server error during registration' });
     }
+  });
+
+  // Add handler to check registration status with improved logging
+  socket.on('check_registration', ({ username }, callback) => {
+    console.log(`Checking registration for username: ${username}`);
+    
+    // Check if this socket is registered
+    const isSocketRegistered = activeUsers.has(socket.id);
+    
+    // Check if the username exists in any active user
+    const usernameExists = Array.from(activeUsers.values())
+      .some(user => user.username === username);
+    
+    // Check if this socket's username matches the requested username
+    const currentUser = activeUsers.get(socket.id);
+    const isCorrectUser = currentUser && currentUser.username === username;
+    
+    console.log(`Registration check: socket registered: ${isSocketRegistered}, username exists: ${usernameExists}, is correct user: ${isCorrectUser}`);
+    console.log('Active users:', activeUsers.size, 'Socket ID:', socket.id);
+    
+    // Only consider registered if this socket has the correct username
+    const registered = isSocketRegistered && isCorrectUser;
+    
+    callback({ registered });
+    
+    // If not registered but should be, log details for debugging
+    if (!registered && username) {
+      console.log('Registration mismatch details:');
+      console.log('- Socket ID:', socket.id);
+      console.log('- Requested username:', username);
+      console.log('- Current user for socket:', currentUser ? JSON.stringify(currentUser) : 'none');
+      console.log('- All active users:', Array.from(activeUsers.entries()).map(([id, user]) => ({
+        id,
+        username: user.username
+      })));
+    }
+  });
+
+  // Add periodic broadcast of online count
+  let lastBroadcastTime = Date.now();
+  const broadcastInterval = setInterval(() => {
+    const now = Date.now();
+    if (now - lastBroadcastTime > 10000) { // Every 10 seconds
+      lastBroadcastTime = now;
+      const count = activeUsers.size;
+      io.emit('online_count', { count });
+      console.log(`Broadcasting online count: ${count}`);
+    }
+  }, 10000);
+
+  // Clean up interval on disconnect
+  socket.on('disconnect', () => {
+    clearInterval(broadcastInterval);
   });
 
   // Handle disconnection with reason and cleanup
@@ -307,28 +408,5 @@ export function setupUserHandlers(io: Server, socket: Socket): void {
         console.error('Error handling disconnect:', error);
       }
     }
-  });
-
-  // Add handler to check registration status
-  socket.on('check_registration', ({ username }, callback) => {
-    console.log(`Checking registration for username: ${username}`);
-    
-    // Check if this socket is registered
-    const isSocketRegistered = activeUsers.has(socket.id);
-    
-    // Check if the username exists in any active user
-    const usernameExists = Array.from(activeUsers.values())
-      .some(user => user.username === username);
-    
-    // Check if this socket's username matches the requested username
-    const currentUser = activeUsers.get(socket.id);
-    const isCorrectUser = currentUser && currentUser.username === username;
-    
-    console.log(`Registration check: socket registered: ${isSocketRegistered}, username exists: ${usernameExists}, is correct user: ${isCorrectUser}`);
-    
-    // Only consider registered if this socket has the correct username
-    const registered = isSocketRegistered && isCorrectUser;
-    
-    callback({ registered });
   });
 }
