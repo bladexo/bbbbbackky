@@ -15,7 +15,7 @@ export const initializeSocket = (httpServer: HTTPServer) => {
   const KOYEB_URL = process.env.KOYEB_URL;
   
   const allowedOrigins = isProd
-    ? [KOYEB_URL ? `https://${KOYEB_URL}` : FRONTEND_URL]
+    ? [KOYEB_URL ? `https://nutty-annabell-loganrustyy-25293412.koyeb.app` : FRONTEND_URL]
     : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
   const io = new Server(httpServer, {
