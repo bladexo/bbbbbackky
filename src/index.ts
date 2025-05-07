@@ -1385,7 +1385,7 @@ if (process.env.NODE_ENV === 'production') {
         }
       }));
       
-      app.get('/{*any}', (_req, res) => {
+      app.get('*', (_req, res) => {
         const indexPath = join(altPath, 'index.html');
         console.log('Serving index.html from:', indexPath);
         if (fs.existsSync(indexPath)) {
@@ -1398,7 +1398,7 @@ if (process.env.NODE_ENV === 'production') {
   } else {
     console.log('dist directory found at:', distPath);
     
-    app.get('/{*any}', (_req, res) => {
+    app.get('*', (_req, res) => {
       const indexPath = join(distPath, 'index.html');
       console.log('Serving index.html from:', indexPath);
       if (fs.existsSync(indexPath)) {
