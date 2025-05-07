@@ -17,6 +17,8 @@ import { UserStats } from './models/UserStats.js';
 import HackAccess from './models/HackAccess.js';
 import GlobalStats from './models/GlobalStats.js';
 import { initializeSocket } from './socket/index.js';
+import mongoose from 'mongoose';
+import statusRoutes from './routes/statusRoutes.js';
 
 // Load environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
@@ -40,7 +42,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`]
+  ? ['https://dworldchat.vercel.app', `https://nutty-annabell-loganrustyy-25293412.koyeb.app`]
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
@@ -78,6 +80,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // Serve static files from public directory
 app.use(express.static(join(__dirname, '../public')));
+
+// Register status routes
+app.use(statusRoutes);
 
 // Root endpoint redirects to status page
 app.get('/', (_req, res) => {
@@ -366,6 +371,3 @@ const startServer = async () => {
 };
 
 startServer();
-
-// Export the app for Vercel
-export default app;
