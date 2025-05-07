@@ -42,7 +42,7 @@ const KOYEB_URL = process.env.KOYEB_URL;
 
 // Configure CORS and allowed origins
 const allowedOrigins = isProd 
-  ? ['https://dworldchat.vercel.app', `https://nutty-annabell-loganrustyy-25293412.koyeb.app`]
+  ? ['https://dworldchat.vercel.app', `https://${KOYEB_URL}`, 'https://nutty-annabell-loganrustyy-25293412.koyeb.app', 'https://charming-romola-dinno-3c220cbb.koyeb.app']
   : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8000', 'http://192.168.60.16:8000'];
 
 // Apply CORS configuration before other middleware
@@ -86,11 +86,11 @@ app.use(statusRoutes);
 
 // Root endpoint redirects to status page
 app.get('/', (_req, res) => {
-  res.redirect('/status');
+  res.redirect('/status-page');
 });
 
-// Status endpoint
-app.get('/status', (_req, res) => {
+// Status HTML page endpoint
+app.get('/status-page', (_req, res) => {
   const statusPath = join(__dirname, '../public/status.html');
   console.log(`[${new Date().toISOString()}] Serving status page from: ${statusPath}`);
   
@@ -371,3 +371,6 @@ const startServer = async () => {
 };
 
 startServer();
+
+// Export the app for Vercel
+export default app;
