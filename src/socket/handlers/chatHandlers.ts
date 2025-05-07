@@ -1,119 +1,125 @@
 import { Server, Socket } from 'socket.io';
-import { activeUsers } from '../state.js';
+import { v4 as uuidv4 } from 'uuid';
 import { UserStats } from '../../models/UserStats.js';
 import { GlobalStats } from '../../models/GlobalStats.js';
-import { sanitizeInput } from '../utils/sanitizer.js';
-import { broadcastLeaderboard, broadcastGlobalStats, emitUserPoints } from '../utils/broadcaster.js';
+import { activeUsers } from '../state.js';
+import { emitUserPoints } from '../utils/broadcaster.js';
 import { usernameController } from '../../routes/adminRoutes.js';
 
 /**
- * Sets up chat message event handlers for a socket
+ * Sets up chat event handlers for a socket
  * @param io The Socket.IO server instance
  * @param socket The socket to set up handlers for
  */
 export function setupChatHandlers(io: Server, socket: Socket): void {
   // Handle global chat messages
-  socket.on('chat_message', async (data) => {
-    const user = activeUsers.get(socket.id);
-    if (!user) {
-      socket.emit('error', 'Not registered');
-      return;
-    }
-
-    // Check if user is blocked/muted
-    if (usernameController && usernameController.isBlocked(user.username)) {
-      const muteInfo = usernameController.getBlockedUsers()[user.username.toLowerCase()];
-      socket.emit('user_muted', {
-        username: user.username,
-        duration: muteInfo.duration,
-        muteUntil: muteInfo.expiresAt
-      });
-      return;
-    }
-
-    // Sanitize message content
-    if (typeof data.content === 'string') {
-      data.content = sanitizeInput(data.content);
-    }
-
-    // Basic message validation
-    if (!data.content || data.content.length > 1000) {
-      socket.emit('error', 'Invalid message length');
-      return;
-    }
-
+  socket.on('chat_message', async (data, callback) => {
+    console.log(`Chat message received from ${socket.id}:`, data.content.substring(0, 30) + (data.content.length > 30 ? '...' : ''));
+    
     try {
-      // Update message stats in MongoDB
-      const result = await UserStats.findOneAndUpdate(
-        { username: user.username },
-        { 
-          $inc: { 
-            messageCount: 1,
-            points: 10
-          },
-          $set: { lastActive: new Date() }
-        },
-        { new: true }
-      );
-
-      // Increment global message count
-      await GlobalStats.incrementMessages();
-
-      if (result) {
-        // Update memory stats
-        user.messageCount = result.messageCount;
-        user.points = result.points;
-        user.lastActive = result.lastActive;
-        activeUsers.set(socket.id, user);
-
-        // Emit updated points to the user
-        await emitUserPoints(socket, user.username);
+      // Check if user is registered
+      const user = activeUsers.get(socket.id);
+      if (!user) {
+        console.log(`Attempt to send message from unregistered user (${socket.id})`);
+        socket.emit('error', 'Not registered');
+        if (callback) callback({ received: false, error: 'Not registered' });
+        return;
       }
-
-      // Broadcast message with replyTo data
-      io.emit('chat_message', {
-        id: data.id || `${socket.id}-${Date.now()}`,
+      
+      // Validate message
+      if (!data.content || typeof data.content !== 'string' || data.content.trim().length === 0) {
+        console.log(`Invalid message from ${user.username} (${socket.id})`);
+        socket.emit('error', 'Invalid message');
+        if (callback) callback({ received: false, error: 'Invalid message' });
+        return;
+      }
+      
+      // Check for mutes
+      if (usernameController && usernameController.isBlocked(user.username)) {
+        const muteInfo = usernameController.getBlockedUsers()[user.username.toLowerCase()];
+        socket.emit('user_muted', {
+          username: user.username,
+          duration: muteInfo.duration,
+          muteUntil: muteInfo.expiresAt
+        });
+        return;
+      }
+      
+      // Generate a unique message ID
+      const messageId = data.id || uuidv4();
+      
+      // Create message object
+      const message = {
+        id: messageId,
         senderId: socket.id,
         senderUsername: user.username,
-        content: data.content,
-        timestamp: Date.now(),
         userColor: user.color,
+        content: data.content,
+        timestamp: new Date(),
         replyTo: data.replyTo,
-        mentions: data.mentions,
-        type: 'user'
-      });
-
-      // Broadcast updated stats
-      await broadcastLeaderboard(io);
-      await broadcastGlobalStats(io);
-
+        // Extract mentions if there are any
+        mentions: extractMentions(data.content)
+      };
+      
+      // Broadcast to all clients
+      io.emit('chat_message', message);
+      
+      // Update message stats for user in memory and DB
+      try {
+        // Update memory stats
+        user.messageCount++;
+        user.points += 5; // 5 points per message
+        user.lastActive = new Date();
+        
+        // Update MongoDB
+        await UserStats.findOneAndUpdate(
+          { username: user.username },
+          { 
+            $inc: { messageCount: 1, points: 5 },
+            $set: { lastActive: new Date() }
+          }
+        );
+        
+        // Update global stats
+        await GlobalStats.incrementMessages();
+        
+        // Emit updated points to user
+        await emitUserPoints(socket, user.username);
+      } catch (error) {
+        console.error('Error updating user stats:', error);
+        // Don't return or break the flow for stats errors
+      }
+      
+      // Acknowledge receipt
+      if (callback) callback({ received: true });
+      
     } catch (error) {
-      console.error('Error handling message:', error);
+      console.error('Error handling chat message:', error);
       socket.emit('error', 'Failed to process message');
+      if (callback) callback({ received: false, error: 'Server error' });
     }
   });
-
-  // Handle typing status
+  
+  // Handle typing indicators
   socket.on('typing_start', () => {
     const user = activeUsers.get(socket.id);
-    if (user) {
-      // Broadcast to everyone except the sender
-      socket.broadcast.emit('user_typing', {
-        id: socket.id,
-        username: user.username,
-        color: user.color
-      });
-    }
+    if (!user) return;
+    
+    // Broadcast to all except sender
+    socket.broadcast.emit('user_typing', {
+      id: socket.id,
+      username: user.username,
+      color: user.color
+    });
   });
-
+  
   socket.on('typing_stop', () => {
-    const user = activeUsers.get(socket.id);
-    if (user) {
-      // Broadcast to everyone except the sender
-      socket.broadcast.emit('user_stopped_typing', {
-        id: socket.id
-      });
-    }
+    socket.broadcast.emit('user_stopped_typing', { id: socket.id });
+  });
+  
+  // Handle ping/pong for connection testing
+  socket.on('ping', () => {
+    socket.emit('pong');
   });
 
   // Update unmute event handler
@@ -138,4 +144,15 @@ export function setupChatHandlers(io: Server, socket: Socket): void {
       });
     }
   });
+}
+
+/**
+ * Extract mentions from message content
+ * @param content Message content
+ * @returns Array of mentioned usernames
+ */
+function extractMentions(content: string): string[] {
+  const mentionRegex = /@(\w+)/g;
+  const matches = content.match(mentionRegex) || [];
+  return matches.map(match => match.substring(1)); // Remove the @ symbol
 }
