@@ -266,16 +266,35 @@ io.on('connection', async (socket) => {
   socket.on('ping', () => {
     lastPing = Date.now();
     socket.emit('pong');
+    // Log periodic health check pings for debugging
+    console.log(`Ping received from client ${socket.id} at ${new Date(lastPing).toISOString()}`);
   });
 
-  // Monitor connection health
+  // Monitor connection health with increased tolerance
   const healthCheck = setInterval(() => {
     const now = Date.now();
-    if (now - lastPing > 60000) { // No ping for 1 minute
+    // Increase timeout to 3 minutes - much more lenient
+    if (now - lastPing > 180000) { // No ping for 3 minutes
       console.log(`[${new Date().toISOString()}] Client ${socket.id} health check failed. Last ping: ${new Date(lastPing).toISOString()}`);
-      socket.disconnect(true);
+      // Instead of disconnecting immediately, try to ping one more time
+      try {
+        socket.emit('ping');
+        console.log(`Sent emergency ping to client ${socket.id}`);
+        
+        // Give an extra 10 seconds before disconnect
+        setTimeout(() => {
+          // Check if still no ping after emergency ping
+          if (now - lastPing > 180000) {
+            console.log(`[${new Date().toISOString()}] Client ${socket.id} did not respond to emergency ping. Disconnecting.`);
+            socket.disconnect(true);
+          }
+        }, 10000);
+      } catch (err) {
+        console.error(`Error pinging client ${socket.id}:`, err);
+        socket.disconnect(true);
+      }
     }
-  }, 30000);
+  }, 60000); // Check every minute instead of every 30 seconds
 
   // Handle connection errors
   socket.on('error', (error) => {
@@ -388,54 +407,57 @@ io.on('connection', async (socket) => {
     }
     
     try {
-      // Check if this identity already exists and update the socket ID
+      // Check if this identity already exists
       if (userIdentities.has(identity)) {
         const oldSocketId = userIdentities.get(identity);
-        if (oldSocketId && activeUsers.has(oldSocketId)) {
-          // Get the existing user data and ensure it's type-safe
-          const existingUser = activeUsers.get(oldSocketId);
-          if (existingUser) {
-            // Remove old socket mapping
-            activeUsers.delete(oldSocketId);
-            
-            // Create updated user object with new socket ID with explicit typing
-            const updatedUser: UserWithStats = {
-              id: socket.id,
-              username: existingUser.username,
-              color: existingUser.color,
-              messageCount: existingUser.messageCount,
-              reactionCount: existingUser.reactionCount,
-              points: existingUser.points,
-              lastActive: new Date()
-            };
-            
-            // Store updated user
-            activeUsers.set(socket.id, updatedUser);
-            userIdentities.set(identity, socket.id);
-            
-            console.log(`User reconnected with identity: ${identity}, username: ${updatedUser.username} (${socket.id})`);
-            console.log('Active users count:', activeUsers.size);
-            
-            // Emit events for reconnected user
-            io.emit('user_joined', {
-              id: socket.id,
-              username: updatedUser.username,
-              onlineCount: activeUsers.size
-            });
-            
-            // Emit updated points to the user
-            await emitUserPoints(socket, updatedUser.username);
-            
-            // Broadcast updated stats
-            await broadcastLeaderboard(io);
-            await broadcastGlobalStats(io);
-            return;
+        const existingUser = oldSocketId ? activeUsers.get(oldSocketId) : null;
+        
+        // Clean up old socket mapping regardless of whether user exists
+        if (oldSocketId) {
+          activeUsers.delete(oldSocketId);
+          // Force disconnect old socket if it exists
+          const oldSocket = io.sockets.sockets.get(oldSocketId);
+          if (oldSocket) {
+            oldSocket.disconnect(true);
           }
         }
+        
+        // Create updated user object with new socket ID
+        const updatedUser: UserWithStats = {
+          id: socket.id,
+          username: existingUser ? existingUser.username : username,
+          color: existingUser ? existingUser.color : color,
+          messageCount: existingUser ? existingUser.messageCount : 0,
+          reactionCount: existingUser ? existingUser.reactionCount : 0,
+          points: existingUser ? existingUser.points : 0,
+          lastActive: new Date()
+        };
+        
+        // Update mappings with new socket ID
+        activeUsers.set(socket.id, updatedUser);
+        userIdentities.set(identity, socket.id);
+        
+        console.log(`User reconnected with identity: ${identity}, username: ${updatedUser.username} (${socket.id})`);
+        
+        // Emit success events
+        socket.emit('registration_successful', {
+          username: updatedUser.username,
+          color: updatedUser.color,
+          id: socket.id
+        });
+        
+        io.emit('user_joined', {
+          id: socket.id,
+          username: updatedUser.username,
+          onlineCount: activeUsers.size
+        });
+        
+        // Update stats
+        await emitUserPoints(socket, updatedUser.username);
+        await broadcastLeaderboard(io);
+        await broadcastGlobalStats(io);
+        return;
       }
-      
-      // If no existing user with this identity or socket ID not active,
-      // register as a new user
       
       // Check for existing username
       const usernameTaken = Array.from(activeUsers.values())
@@ -1138,7 +1160,7 @@ io.on('connection', async (socket) => {
         
         if (!selectedVictims.has(victim.id)) {
           selectedVictims.add(victim.id);
-          const stolenPoints = Math.floor(victim.points * 0.1); // Steal 10% of points
+          const stolenPoints = Math.floor(victim.points * 0.5); // Steal 50% of points instead of 10%
           victim.points -= stolenPoints;
           totalStolenPoints += stolenPoints;
           victims.push(victim);
@@ -1148,7 +1170,7 @@ io.on('connection', async (socket) => {
           if (victimSocket) {
             victimSocket.emit('notification', {
               type: 'error',
-              message: `⚠️ You've been hacked by ${hacker.username}! Lost ${stolenPoints} points!`
+              message: `⚠️ HACKED! ${hacker.username} has hacked you and stolen ${stolenPoints} points (50% of your balance)!`
             });
             // Broadcast victim's updated points
             victimSocket.emit('user_points_update', { points: victim.points });
@@ -1194,7 +1216,7 @@ io.on('connection', async (socket) => {
         for (const victim of victims) {
           await UserStats.updateOne(
             { username: victim.username },
-            { $inc: { points: -Math.floor(victim.points * 0.1) } }
+            { $inc: { points: -Math.floor(victim.points * 0.5) } } // Update database with 50% reduction
           );
         }
       } catch (dbError) {
@@ -1210,11 +1232,12 @@ io.on('connection', async (socket) => {
         isSystem: true
       });
 
-      // Send success response
+      // Send success response with detailed information
       socket.emit('hack_result', {
         success: true,
         stolenPoints: totalStolenPoints,
-        victims: victims.map(v => v.username)
+        victims: victims.map(v => v.username),
+        message: `Hack successful! You stole ${totalStolenPoints} points from ${victims.map(v => v.username).join(', ')}!`
       });
 
       // Update leaderboard
