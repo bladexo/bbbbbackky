@@ -48,7 +48,7 @@ const userStatsSchema = new mongoose.Schema({
   versionKey: false,
   collection: 'userstats',
   toJSON: {
-    transform: function(doc, ret) {
+    transform: function(doc, ret: any) {
       delete ret._id;
       return ret;
     }
