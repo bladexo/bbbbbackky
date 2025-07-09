@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-const MONGODB_URI = 'mongodb+srv://dinnobd:okokokok@cluster0.aic2jaq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+const MONGODB_URI = 'mongodb+srv://dinnobd:oluwaloni@cluster0.aic2jaq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 const DB_OPTIONS = {
   maxPoolSize: 10,
   serverSelectionTimeoutMS: 5000,
