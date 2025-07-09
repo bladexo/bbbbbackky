@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-const MONGODB_URI = 'mongodb+srv://dinnobd:oluwaloni@cluster0.aic2jaq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+const MONGODB_URI = 'mongodb+srv://dinnodee21:S4uuMIZBhRX6cFGi@cluster0.be3j5gd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 const DB_OPTIONS = {
   maxPoolSize: 10,
   serverSelectionTimeoutMS: 5000,
@@ -75,7 +75,7 @@ async function initializeCollections(db: mongoose.Connection) {
 export const connectDB = async () => {
   try {
     console.log('\n🚀 Initializing MongoDB connection...');
-    console.log('📝 Using MongoDB URI:', MONGODB_URI.replace(/\/\/([^:]+):([^@]+)@/, '//$1:****@'));
+    console.log('📝 Using MongoDB URI:', MONGODB_URI);
 
     // Log initial connection state
     console.log('Initial connection state:', STATES[mongoose.connection.readyState as keyof typeof STATES]);
